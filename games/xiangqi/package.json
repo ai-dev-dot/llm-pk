@@ -6,7 +6,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "spike:parse": "tsx scripts/spike-parse.ts",
-    "dev": "tsx watch server/main.ts"
+    "dev": "tsx watch server/main.ts",
+    "smoke": "tsx e2e/smoke.ts"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
