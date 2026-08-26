@@ -134,7 +134,7 @@ function parseChinese(s: string, board: Board, side: Side): ParseResult {
   if (!m) return { ok: false, reason: 'PARSER_INVALID' };
 
   const type = PIECE_CHARS[m[2]!];
-  if (!type) return { ok: false, reason: 'UNKNOWN_Piece' };
+  if (!type) return { ok: false, reason: 'UNKNOWN_PIECE' };
 
   const col = m[3] == null ? null : digit(m[3]);
   const num = digit(m[5]);
@@ -159,10 +159,14 @@ function parseChinese(s: string, board: Board, side: Side): ParseResult {
       const arr = byFile.get(c.file);
       if (arr) arr.push(c); else byFile.set(c.file, [c]);
     }
-    const pairFile = [...byFile.entries()].find(([, arr]) => arr.length >= 2);
+    // 含 ≥2 枚同型子的 file;若有两个以上这样的 file 且无列号定址,无法确定「前/后」指哪一列 → 歧义
+    const pairFiles = [...byFile.entries()].filter(([, arr]) => arr.length >= 2);
     let pool: Sq[] | null = null;
-    if (pairFile && (colFile === null || pairFile[0] === colFile)) pool = pairFile[1];
-    else if (!pairFile && colFile !== null && cands.length === 1) pool = cands;
+    if (pairFiles.length === 1 && (colFile === null || pairFiles[0][0] === colFile)) {
+      pool = pairFiles[0][1];
+    } else if (pairFiles.length === 0 && colFile !== null && cands.length === 1) {
+      pool = cands;   // 退化:唯一同型子且带列号
+    }
     if (pool === null) return { ok: false, reason: 'PARSER_AMBIGUOUS' };
     // 前 = 靠近敌方;红 rank 大、黑 rank 小
     const sorted = [...pool].sort((a, b) => (side === 'red' ? b.rank - a.rank : a.rank - b.rank));

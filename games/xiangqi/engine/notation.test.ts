@@ -191,12 +191,22 @@ describe('前/后 同线双子歧义', () => {
     expect(failReason('车五进一', redRookPairBoard(), 'red')).toBe('PARSER_AMBIGUOUS');
     expect(failReason('车5进1', blackRookPairBoard(), 'black')).toBe('PARSER_AMBIGUOUS');
   });
+  it('两列各双同名子,前/后又无列号 → PARSER_AMBIGUOUS(不得按插入序猜测)', () => {
+    const b = cloneBoard(initialBoard());
+    b[sqToIdx(0, 0)] = null;                 // 移走 a1 车
+    b[sqToIdx(8, 0)] = null;                 // 移走 i1 车
+    b[sqToIdx(1, 3)] = { side: 'red', type: 'rook' };   // b 列双车
+    b[sqToIdx(1, 6)] = { side: 'red', type: 'rook' };
+    b[sqToIdx(2, 4)] = { side: 'red', type: 'rook' };   // c 列双车
+    b[sqToIdx(2, 7)] = { side: 'red', type: 'rook' };
+    expect(failReason('前车进一', b, 'red')).toBe('PARSER_AMBIGUOUS');
+  });
 });
 
 describe('非法/未识别', () => {
   const b = initialBoard();
   it('未知棋种 → UNKNOWN_Piece', () => {
-    expect(failReason('牛三进一', b, 'red')).toBe('UNKNOWN_Piece');
+    expect(failReason('牛三进一', b, 'red')).toBe('UNKNOWN_PIECE');
   });
   it('马/象/士 用「平」→ PARSER_INVALID', () => {
     expect(failReason('马二平五', b, 'red')).toBe('PARSER_INVALID');
