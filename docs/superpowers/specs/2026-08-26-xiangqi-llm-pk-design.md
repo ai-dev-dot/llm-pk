@@ -168,8 +168,8 @@ interface Player {
 interface MoveContext {
   side: Side;
   asciiBoard: string;         // render.ts 输出的文本棋盘(统一坐标)
-  history: string[];          // 双方已走记谱(公共信息)
-  carrySelfAnalysis: boolean; // 是否附带己方此前思考(原则 C)
+  history: string[];          // 双方已走记谱(公共信息,紧凑形态)
+  selfThoughts: { move: string; analysis: string }[];  // 己方最近 N 步思考(窗口截断,仅己方可见)
   rejection?: { round: number; reason: string };   // 本回合若曾被拒,携带最近一次打回原因
 }
 interface MoveChoice { analysis: string; move: string; } // move 为自由文本:中文记谱(炮二平五)或坐标(h3-e3)
@@ -214,11 +214,15 @@ session.black = [ systemPrompt(黑·含规则说明), ...历史(公共移动序�
 | 当前局面 ASCII | ✓ | ✓ |
 | 裁判内部状态 | ✗ | ✗ |
 
-**思考回显决策(用户提出的不确定点)**:有意识地**默认开启**`carrySelfAnalysis = true`——把**己方上一步的 analysis** 作为附注回传给自己,使模型能延续自己的推理链(不同模型的"自省连续性"差异本就是 PK 看点),因此它**写日志但不给对方**;
+**思考回显决策(用户拍板:默认恒开)+ 上下文长度管理(用户拍板)**:己方思考**默认且恒回显**——棋手记住自己为何走到这里,不同模型的"自省连续性"差异正是 PK 看点。回显仅在本方会话内,**绝不给对方**。
 
-- 隔离性不受影响:回显仅在本方自己的会话内;
-- **可关闭**:`config.game.carrySelfAnalysis=false` 时完全不带任何思考,仅局面+规则说明+历史,便于对照实验;
-- 成本/token 与收益平衡在实施期用真实对局观察,结论记入本游戏 README。
+- **回显窗口**:`carrySelfAnalysisN`(默认 6,可配)。只回传最近 N 步自己 analysis,更早丢弃;
+- **上下文长度(关键工程点)**,四条配合保证长局不失控:
+  1. 历史采用**紧凑记谱**(每步一行),不重发整盘棋盘,只发当前棋盘;
+  2. analysis 用上述**窗口截断**,旧思考不无限累积;
+  3. 护栏 `contextBudgetTokens`(默认 32000,须小于所用模型窗口):超预算先从最旧 analysis 剪,再则从历史尾部截断并记录提示;
+  4. **可观测**:每方会话 token 用量取自 response usage,写入日志与 UI,实施期据真实对局校准默认值;
+- 不做"关闭回显"的常规开关(对照实验如需,临时把窗口设 0)。
 
 ## 9. 调度器(arena)
 
@@ -279,8 +283,9 @@ idle → running →(pause)⇄(resume / step)running → finished
 
 ```bash
 npm install
-# config: base_url / api_key / red.model / black.model / carrySelfAnalysis /
-#            drawRepeat / illegalAttemptsLimit(默认3) / networkRetries(默认3) / timeoutMs …
+# config: base_url / api_key / red.model / black.model / carrySelfAnalysisN(默认6) /
+#            contextBudgetTokens(默认32000) / drawRepeat / illegalAttemptsLimit(默认3) /
+#            networkRetries(默认3) / timeoutMs …
 npm run dev      # 后端 + Vite 前端;打开 localhost:5173
 ```
 
