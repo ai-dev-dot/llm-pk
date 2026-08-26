@@ -239,3 +239,7 @@ export function rawMovesFor(b: Board, sq: Sq, side: Side, _threats?: unknown): M
     case 'pawn': return pawnMoves(b, sq, side);
   }
 }
+
+// 统一入口:送将过滤 / 照面检测 / 合法走法由 attack.ts 提供,在此再导出,
+// 使上层可单点 import('./moves') 同时拿到原始走法与合法走法(在 attack.ts 内统一调用 rawMovesFor 规则)。
+export { isInCheck, isGeneralFacing, simulateApply, requireApply, moveToKey, legalMoves } from './attack';
