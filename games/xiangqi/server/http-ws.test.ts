@@ -23,6 +23,8 @@ import WebSocket from 'ws';
 import request from 'supertest';
 import { createXiangqiServer, type GameRecord } from './http';
 import type { Player, MoveChoice } from './arena';
+import type { ReviewClient, ReviewPayload } from './review';
+import type { GameEvent, ReviewEvent } from './game-log';
 import type { Side } from '../engine/types';
 
 /* ---------- 工具 ---------- */
@@ -98,11 +100,13 @@ interface TestServer {
 /** 起一个真实可用的 http 服务(port 0),WS 与 REST 共用。 */
 async function startServer(
   buildPlayer?: (side: Side) => Player,
+  reviewClient?: ReviewClient,
 ): Promise<TestServer> {
   const logDir = await mkdtemp(join(tmpdir(), 'xiangqi-http-ws-'));
   const srv = createXiangqiServer({
     logDir,
     buildPlayer: buildPlayer ? (side) => buildPlayer(side) : undefined,
+    reviewClient,
   });
   srv.server.listen(0);
   await new Promise<void>((res) => srv.server.once('listening', () => res()));
@@ -487,6 +491,156 @@ describe('容错:畸形输入不崩溃', () => {
       expect(res.status).toBe(413);
       expect(res.body.error).toBeDefined();
       expect(res.body.error.code).toBeDefined();
+    } finally {
+      await srv.dispose();
+    }
+  });
+});
+
+/* ---------- 用例 6:赛后复盘接线(独立凭据 + 降级) ---------- */
+
+function baseReviewBody() {
+  return baseBody({
+    config: { maxTotalMoves: 2 },
+    review: { baseUrl: 'http://review.local:1', apiKey: 'sk-review', model: 'cm-review' },
+  });
+}
+
+/** 脚本化一方小局(两步终局 draw-max-moves)。 */
+function scriptSmallGame(side: Side): Player {
+  return side === 'red' ? scriptPlayer('red', ['a4-a5']) : scriptPlayer('black', ['i7-i6']);
+}
+
+const reviewPayload = (): ReviewPayload => ({
+  summary: '红方开局略优,终局和棋',
+  highlights: ['红先左兵试探', '黑右卒应对'],
+  mistakes: [{ side: 'red', move: 'a5', note: '首着过缓' }],
+});
+
+const findReview = (record: GameRecord): ReviewEvent | undefined =>
+  [...record.events].reverse().find((e): e is ReviewEvent => e.type === 'review');
+
+describe('赛后复盘接线(review 独立凭据与降级)', () => {
+  it('配齐 review 凭据 + 注入 client:终局后异步落 review(seq 延续、WS 可补发、replay 同源、密钥不外泄)', async () => {
+    const payload = reviewPayload();
+    const client: ReviewClient = {
+      async generate(digest: string) {
+        expect(digest).toContain('a4→a5'); // digest 来自公共事件,含记谱
+        return { payload, usage: { promptTokens: 100, completionTokens: 30, costUsd: 0.0004 }, elapsedMs: 7 };
+      },
+    };
+    const srv = await startServer(scriptSmallGame, client);
+    try {
+      const { id } = await createGame(srv.server, baseReviewBody());
+      const arena = srv.registry.get(id)!;
+      await waitFor(() => arena.state === 'finished');
+
+      // 等 review 异步落地(与终局解耦,不阻塞 finish)
+      await waitFor(() => srv.store.get(id)!.events.some((e) => e.type === 'review'));
+      const record = srv.store.get(id)!;
+      const reviews = record.events.filter((e): e is ReviewEvent => e.type === 'review');
+      expect(reviews).toHaveLength(1);
+      expect(reviews[0]).toMatchObject({
+        summary: '红方开局略优,终局和棋',
+        highlights: ['红先左兵试探', '黑右卒应对'],
+        mistakes: [{ side: 'red', move: 'a5', note: '首着过缓' }],
+        model: 'cm-review',
+        elapsedMs: 7,
+        usage: { promptTokens: 100, completionTokens: 30, costUsd: 0.0004 },
+      });
+
+      // seq 延续:review 在 finish 之后,单调递增
+      const finishSeq = record.events.find((e) => e.type === 'finish')?.seq ?? 0;
+      expect(reviews[0]!.seq).toBeGreaterThan(finishSeq);
+      const seqs = record.events.map((e) => e.seq);
+      expect(seqs).toEqual(Array.from({ length: seqs.length }, (_, i) => i + 1)); // 严格 1..N 连续
+
+      // replay 端点读日志 → 与内存镜像同源含 review
+      const rep = await request(srv.server).get(`/api/games/${id}/replay`);
+      expect(JSON.stringify(rep.body)).not.toContain('sk-review');
+      expect(rep.body.events.some((e: GameEvent) => e.type === 'review')).toBe(true);
+
+      // WS:重连 since=lastSeq-1 → 补发 review 帧(断线续传不丢)
+      const lastSeq = record.events[record.events.length - 1]!.seq;
+      const sink = openWs(srv.port, id, lastSeq - 1);
+      await sink.opened;
+      const frame = await sink.next<{ seq: number; event: { type: string } }>();
+      expect(frame.event.type).toBe('review');
+      expect(JSON.stringify(frame)).not.toContain('sk-review');
+      sink.ws.close();
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('未配 review 凭据(缺三要素)→ 复盘禁用:终局后无 review,对局结果不变', async () => {
+    const client: ReviewClient = {
+      async generate() {
+        throw new Error('不应被调用');
+      },
+    };
+    const srv = await startServer(scriptSmallGame, client);
+    try {
+      // baseBody 无 review 段(config 也无 review)→ 三要素缺失
+      const { id } = await createGame(srv.server, baseBody({ config: { maxTotalMoves: 2 } }));
+      const arena = srv.registry.get(id)!;
+      await waitFor(() => arena.state === 'finished');
+      await sleep(30); // 若误触发,review 异步也会在此前/后落地;peek 观测
+
+      const record = srv.store.get(id)!;
+      expect(findReview(record)).toBeUndefined();
+      expect(record.events.some((e) => e.type === 'review')).toBe(false);
+      const rep = await request(srv.server).get(`/api/games/${id}/replay`);
+      expect(rep.body.events.some((e: GameEvent) => e.type === 'review')).toBe(false);
+      // 对局终局结论不受影响
+      expect(arena.state).toBe('finished');
+      expect(findReview(record)).toBeUndefined();
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('replay 只配了一半凭据(有 key 无 model)→ disabled,同理无 review', async () => {
+    const srv = await startServer(scriptSmallGame);
+    try {
+      const { id } = await createGame(
+        srv.server,
+        baseBody({
+          config: { maxTotalMoves: 2 },
+          review: { baseUrl: 'http://review.local:1', apiKey: 'sk-review' }, // 缺 model
+        }),
+      );
+      const arena = srv.registry.get(id)!;
+      await waitFor(() => arena.state === 'finished');
+      await sleep(30);
+      const record = srv.store.get(id)!;
+      expect(record.events.some((e) => e.type === 'review')).toBe(false);
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('配 review 但 client 网络失败(500)→ degraded:无 review 落地,对局终局结论不变', async () => {
+    const client: ReviewClient = {
+      async generate() {
+        throw new Error('HTTP 500');
+      },
+    };
+    const srv = await startServer(scriptSmallGame, client);
+    try {
+      const { id } = await createGame(srv.server, baseReviewBody());
+      const arena = srv.registry.get(id)!;
+      await waitFor(() => arena.state === 'finished');
+      await sleep(30); // degraded 静默,不落任何事件
+
+      const record = srv.store.get(id)!;
+      expect(findReview(record)).toBeUndefined();
+      expect(record.events.some((e) => e.type === 'review')).toBe(false);
+      // 对局终局结论不受影响
+      const fin = record.events.find((e) => e.type === 'finish');
+      expect(fin).toMatchObject({ winner: 'draw', reason: 'draw-max-moves' });
+      const rep = await request(srv.server).get(`/api/games/${id}/replay`);
+      expect(rep.body.events.some((e: GameEvent) => e.type === 'review')).toBe(false);
     } finally {
       await srv.dispose();
     }

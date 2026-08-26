@@ -27,10 +27,11 @@ import type { Arena } from './arena';
 import type { Player } from './arena';
 import { GameRegistry } from './game-registry';
 import type { GameEvent, GameLogSink, GameRulesSnapshot } from './game-log';
-import { readAllEvents } from './game-log';
-import { AnthropicPlayer } from './models/anthropic';
+import { appendEvent, readAllEvents } from './game-log';
+import { AnthropicPlayer, DEFAULT_TOKENS_PER_M } from './models/anthropic';
 import type { TokensPerM } from './models/anthropic';
 import type { Side } from '../engine/types';
+import { reviewGame, type ReviewClient, type ReviewContext } from './review';
 import { attachWsServer } from './ws';
 
 /* ---------- 类型 ---------- */
@@ -61,12 +62,33 @@ export interface ServerDefaults {
   rules?: Partial<GameRulesSnapshot>;
   maxCostPerGame?: number;
   networkRetryBaseDelayMs?: number;
+  /** 赛后复盘缺省(独立进程/独立凭据;未配 `api_key` 则复盘禁用)。 */
+  review?: {
+    base_url?: string;
+    api_key?: string;
+    model?: string;
+    max_tokens?: number;
+    timeout_ms?: number;
+    tokens_per_m?: { input?: number; output?: number };
+  };
+}
+
+/** 请求体里解析出的复盘客户端配置(secret 只在服务内存,绝不外发/落日志)。 */
+export interface ResolvedReview {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  timeoutMs?: number;
+  maxTokens?: number;
+  tokensPerM?: TokensPerM;
 }
 
 export interface GameRecord {
   id: string;
   arena: Arena;
   logPath: string;
+  /** 该局的日志 sink(与 arena 共用一个对象,`appendEvent` 的 seq 沿同一序列延续)。 */
+  sink: GameLogSink;
   /** 与日志严格同源的内存事件镜像(每事件 append 一次)。 */
   events: GameEvent[];
   redModel: string;
@@ -84,6 +106,8 @@ export interface XiangqiServerOptions {
   logDir?: string;
   /** `config.json` 缺省(作为请求体缺省补齐)。 */
   config?: ServerDefaults;
+  /** 复盘客户端注入(测试替身);缺省 review 服务自建独立凭据客户端。 */
+  reviewClient?: ReviewClient;
 }
 
 export interface XiangqiServer {
@@ -186,11 +210,12 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
 
     const gid = randomUUID();
     const logPath = join(logDir, `${gid}.jsonl`);
+    const sink = fileLogSink(logPath); // 与 arena 共用同一对象,事后复盘追加在同一 seq 序列上
     const arena = registry.create({
       gameId: gid,
       red: { player: buildPlayer('red', red), model: red.model, systemPrompt: red.systemPrompt },
       black: { player: buildPlayer('black', black), model: black.model, systemPrompt: black.systemPrompt },
-      sink: fileLogSink(logPath),
+      sink,
       rules,
       maxCostPerGame,
       networkRetryBaseDelayMs,
@@ -199,6 +224,7 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
       id: gid,
       arena,
       logPath,
+      sink,
       events: [],
       redModel: red.model,
       blackModel: black.model,
@@ -209,6 +235,15 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     store.set(gid, record);
     // 先挂上事件镜像(含 begin),再启动;begin 在 start() 同步阶段落日志,镜像不漏。
     arena.onEvent.on('event', (evt: GameEvent) => record.events.push(evt));
+    // 终局后异步触发赛后复盘(独立凭据客户端;失败静默降级,绝不影响对局状态)。
+    const reviewOpts = resolveReview(body.review, dflt);
+    if (reviewOpts) {
+      arena.onEvent.on('finish', () => {
+        void triggerReview(record, { ...reviewOpts, client: opts.reviewClient }).catch(() => {
+          /* reviewGame 已兜底为 degraded;此处防御意外同步抛错 */
+        });
+      });
+    }
     void arena.start();
 
     res.status(201).json({ id: gid });
@@ -402,5 +437,65 @@ function reasonOf(r: GameRecord): string | null {
     if (e.type === 'finish') return e.reason;
   }
   return null;
+}
+
+/**
+ * 解析复盘配置:请求体 `review` 优先,dflt(config.json) 补齐。
+ * **独立凭据硬性条款**:baseUrl/apiKey/model 三要素缺一 ⇒ 返回 undefined(复盘禁用),
+ * 绝不借用红/黑某方 key 补位。
+ */
+function resolveReview(raw: unknown, d: ServerDefaults): ResolvedReview | undefined {
+  const b = obj<Record<string, unknown>>(raw);
+  const def = d.review ?? {};
+  const baseUrl = str(b?.baseUrl) ?? def.base_url;
+  const apiKey = str(b?.apiKey) ?? def.api_key;
+  const model = str(b?.model) ?? def.model;
+  if (!baseUrl || !apiKey || !model) return undefined;
+  return {
+    baseUrl,
+    apiKey,
+    model,
+    maxTokens: num(b?.maxTokens) ?? num(b?.max_tokens) ?? def.max_tokens,
+    timeoutMs: num(b?.timeoutMs) ?? num(b?.timeout_ms) ?? def.timeout_ms,
+    tokensPerM: resolveTokensPerM(obj(b?.tokensPerM), def.tokens_per_m),
+  };
+}
+
+/** 合并 tokens_per_m(请求体优先,config.json 补齐;只配单边时另一侧回落 DEFAULT)。 */
+function resolveTokensPerM(
+  req?: unknown,
+  def?: { input?: number; output?: number },
+): TokensPerM | undefined {
+  const r = obj<Record<string, unknown>>(req);
+  const input = num(r?.input) ?? def?.input;
+  const output = num(r?.output) ?? def?.output;
+  if (input !== undefined && output !== undefined) return { input, output };
+  if (input !== undefined || output !== undefined) {
+    const base = DEFAULT_TOKENS_PER_M;
+    return { input: input ?? base.input, output: output ?? base.output };
+  }
+  return undefined;
+}
+
+/**
+ * 终局后异步触发赛后复盘:ok 则以同一 sink 追加 `review` 事件(seq 延续),
+ * 并同步进内存镜像 + 广播(WS 实时帧与断线重连补发同源);degraded 静默不作任何落地。
+ */
+async function triggerReview(record: GameRecord, ctx: ReviewContext): Promise<void> {
+  const result = await reviewGame([...record.events], ctx);
+  if (result.kind !== 'ok') return;
+  const { review } = result;
+  const recorded = appendEvent(record.sink, {
+    type: 'review',
+    summary: review.summary,
+    highlights: review.highlights,
+    mistakes: review.mistakes,
+    model: review.model,
+    elapsedMs: review.elapsedMs,
+    usage: review.usage,
+  });
+  // `event` 广播会触发 http.ts 的镜像 listener(record.events.push)与 WS 推流 ——
+  // 只此一处落地,不手动 push,避免事件被双重计入镜像。
+  record.arena.onEvent.emit('event', recorded);
 }
 

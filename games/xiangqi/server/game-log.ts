@@ -125,10 +125,21 @@ export interface PlayerMessageEvent extends BaseEvent {
 export interface ReviewEvent extends BaseEvent {
   type: 'review';
   summary: string;
+  /** 单条失误复盘(赛后全量公共日志产出,与对局模型/凭据隔离)。 */
+  mistakes?: ReviewMistake[];
+  /** 要点/亮点(旧字段名 keyPoints 的感知等价别名,供复盘服务产出)。 */
+  highlights?: string[];
+  /** 兼容别名(早期前端用 keyPoints 渲染要点;新服务产出走 highlights,两者可并存)。 */
   keyPoints?: string[];
   model?: string; // 审查模型(与对局模型可不同)
   elapsedMs?: number;
   usage?: Usage;
+}
+
+export interface ReviewMistake {
+  side: Side;
+  move?: string;
+  note: string;
 }
 
 export type GameEvent =

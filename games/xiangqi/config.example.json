@@ -5,5 +5,12 @@
   "black": { "model": "claude-sonnet-4-5" },
   "steps": 40,
   "max_tokens": 1024,
-  "timeout_ms": 120000
+  "timeout_ms": 120000,
+  "review": {
+    "base_url": "https://api.anthropic.com",
+    "api_key": "",
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1024,
+    "timeout_ms": 120000
+  }
 }
