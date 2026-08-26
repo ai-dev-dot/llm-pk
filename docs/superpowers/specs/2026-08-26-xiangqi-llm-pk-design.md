@@ -17,6 +17,8 @@
 - 胜负判定:**将死**、**困毙**、走法非法/超时判负;
 - 和棋简化:**重复局面判和**、**双方均无可胜子力判和**(不作竞赛级长将长捉精确裁定)。
 
+**核心理念(用户明确决定,最高优先级之一)**:模型要**像真正的棋手一样独立思考**——它只看到棋盘,自主提出走法(以自由表达方式,如中文记谱"炮二平五"或坐标),由裁判代码校验合法性;不合规则会被**打回并记录**——模型对规则的掌握本身就是被测评的能力,计入指标。**绝不**向模型提供合法走法清单让它挑选。
+
 ## 2. 设计原则(本项目不可妥协的三条)
 
 > 这三条由用户明确提出,优先级高于其余所有设计细节。
@@ -26,7 +28,7 @@
 我们的模型大多不是多模态模型,不能"看"棋盘图片。因此:
 
 - 局面一律渲染为 **ASCII 文本棋盘**,用字符表示棋子(红/黑分色);
-- 棋步一律用 **结构化文本坐标**表达;
+- 系统内部棋步一律用 **结构化文本坐标**表示(`h3-e3`);模型侧允许自由表达(记谱/坐标),由 `parseMove` 收口归一;
 - 禁止把位图/截图/SVG 图像放入模型请求。
 
 ### 原则 B:公证优先——双方使用**完全同一份代码**
@@ -48,6 +50,13 @@
 - 红、黑各自维护**独立的会话上下文**,互不可见;
 - 任何一方**都不能**读到:对方的思考内容、对方的历史消息、裁判的未公开状态;
 - **思考过程处理**:每方"自己上一步的思考"是否回显给该方自己,作为设计决策,见 §8(默认开启,可通过配置关闭)。
+
+### 原则 D:棋手式自由出招——规则掌握是被测评的能力
+
+- 模型只接收**棋盘与规则说明**,自行提出走法,不接受任何"合法走法清单";
+- 走法解析与合法性校验**全部由确定性裁判代码**完成(§4、§6);
+- 非法/不可解析的走法被**打回**(reject),打回信息只解释原因、**绝不泄露"哪个才是合法走"**,否则模型高考打回逆向推出清单,原则就被架空了;
+- 每方被打回次数(`ruleViolations`)作为**测评指标**记入日志与 UI,联同胜负一起回答"它懂多少规则"。对红黑完全对称。
 
 ## 3. 架构总览(方案 A:单体应用)
 
@@ -133,7 +142,7 @@ interface Game<State, Move> {
 ## 5. 对局模型与事件日志
 
 - **唯一真相源**:一次对局 = 一条 append-only JSONL 日志;实时观战与回放都由日志事件重建。
-- 事件类型:`begin`、`move`、`check`、`captured`、`draw`、`finish`(winner+reason)、`illegal-move`、`retry`、`timeout`、`error`、`player-message`(思考)。
+- 事件类型:`begin`、`move`、`check`、`captured`、`illegal-attempt`(打回:含 `round`/`reason`/`violations` 增量)、`draw`、`finish`(winner + reason + 双方 `ruleViolations`)、`retry`、`timeout`、`error`、`player-message`(思考)。
 - `move` 事件示例:
 
 ```jsonc
@@ -146,33 +155,34 @@ interface Game<State, Move> {
 
 `usage` 取自 Anthropic 响应的 usage 字段,展示"思考成本指标"(本期已批准),是评估模型效率的关键数据,写入日志不进入任一方上下文。
 
-- 思考内容(`analysis`)写入日志,用于复盘,但**不对对方可见**(原则 C)。
+- 思考内容(`analysis`)写入日志,用于复盘,但**不对对方可见**(原则 C);
+- 每方被打回次数(`ruleViolations`)、每次打回的 `reason` 均入日志,是"规则掌握度"测评指标(原则 D)。
 
 ## 6. 棋手模型接口与文本化交互(原则 A)
 
 ```ts
 interface Player {
-  readonly side: Side;                                        // "red" | "black"
-  pickMove(ctx: MoveContext): Promise<MoveChoice>;
+  readonly side: Side;
+  pickMove(ctx: MoveContext): Promise<MoveChoice>;   // 单次请求;打回报复循环由 server 侧控制
 }
 interface MoveContext {
   side: Side;
-  asciiBoard: string;        // render.ts 输出的文本棋盘(统一坐标)
-  legalMoves: { from: string; to: string }[];   // 合法走法清单(统一坐标)
-  history: string[];         // 双方已走记谱(公共信息)
-  carrySelfAnalysis: boolean;// 是否附带己方此前思考(原则 C)
+  asciiBoard: string;         // render.ts 输出的文本棋盘(统一坐标)
+  history: string[];          // 双方已走记谱(公共信息)
+  carrySelfAnalysis: boolean; // 是否附带己方此前思考(原则 C)
+  rejection?: { round: number; reason: string };   // 本回合若曾被拒,携带最近一次打回原因
 }
-interface MoveChoice { analysis: string; move: { from: string; to: string } }
+interface MoveChoice { analysis: string; move: string; } // move 为自由文本:中文记谱(炮二平五)或坐标(h3-e3)
 ```
 
 `AnthropicPlayer` 实现:
 
-1. 以 `system` 说明角色(红/黑)、规则边界、输出要求——**同一份模板**,仅角色词不同;
-2. 用 **tool-use / JSON schema** 强制结构化输出 `{analysis, move}`;
-3. 把 `asciiBoard`、`legalMoves`(带记谱参照)、`history` 置于 `user` 消息;
-4. 解析输出后交由引擎校验;非法则按 §9 回退策略处理。
+1. `system` 用**同一份模板**说明角色、**完整中国象棋规则**(蹩腿、塞象眼、不得送将、应将、记谱约定……)与输出要求;**只允许"红/黑、执先/执后"的文本差异**;
+2. 用 **tool-use / JSON schema** 强制输出 `{analysis, move}`,其中 `move` 是自由文本(不限定格式);
+3. `user` 消息含 `asciiBoard` 与 `history`;若本回合曾被拒,再附最近一次 `rejection{ reason }`;
+4. 输出交给唯一解析入口 `engine.notation.parseMove(text, state, side) → {ok, move, reason}`,解析与合法性校验全在此处完成,结果按 §9 打回循环处理。
 
-**明确禁止**:向请求中注入位图、截图、SVG;局面信息只能走文本通道。
+**明确禁止**:向请求中注入位图/截图/SVG;把 `legalMoves` 清单序列化进任何 `user` 消息;打回原因里"枚举合法走法"。
 
 ## 7. 公证性保证(原则 B 的落地清单)
 
@@ -180,6 +190,7 @@ interface MoveChoice { analysis: string; move: { from: string; to: string } }
 - 服务器只有一条 `AnthropicPlayer` 类,红黑实例化仅参数不同;
 - 提示词:唯一的 `buildSystemPrompt(side)` / `buildUserPrompt(ctx)`,diff 检查保证除 `红/黑`、`执先/执后` 文本外零差异;
 - 超时、重试次数、退避、判罚滥用同一常量与同一策略函数;
+- 走法解析入口唯一(`engine.notation.parseMove`,见 §6),红黑同一实现:解析不出的记谱一律走打回,绝不猜测;打回文案同一模板;`illegalAttemptsLimit` 红黑同参;
 - 回合顺序由引擎 `turn` 决定,调度器不得偏爱任一方;
 - 对局日志中出现任何"同一局面两种裁决"即视为 bug,单测覆盖。
 
@@ -188,8 +199,8 @@ interface MoveChoice { analysis: string; move: { from: string; to: string } }
 **会话模型**:`session.ts` 为每方维护独立的对话消息数组:
 
 ```
-session.red = [ systemPrompt(红), ...历史(公共移动序列), 当前回合(棋盘+走法清单) ]
-session.black = [ systemPrompt(黑), ...历史(公共移动序列), 当前回合(棋盘+走法清单) ]
+session.red = [ systemPrompt(红·含规则说明), ...历史(公共移动序列), 当前回合(棋盘 + [打回原因]) ]
+session.black = [ systemPrompt(黑·含规则说明), ...历史(公共移动序列), 当前回合(棋盘 + [打回原因]) ]
 ```
 
 隔离边界:
@@ -206,7 +217,7 @@ session.black = [ systemPrompt(黑), ...历史(公共移动序列), 当前回合
 **思考回显决策(用户提出的不确定点)**:有意识地**默认开启**`carrySelfAnalysis = true`——把**己方上一步的 analysis** 作为附注回传给自己,使模型能延续自己的推理链(不同模型的"自省连续性"差异本就是 PK 看点),因此它**写日志但不给对方**;
 
 - 隔离性不受影响:回显仅在本方自己的会话内;
-- **可关闭**:`config.game.carrySelfAnalysis=false` 时完全不带任何思考,仅局面+走法清单,便于对照实验;
+- **可关闭**:`config.game.carrySelfAnalysis=false` 时完全不带任何思考,仅局面+规则说明+历史,便于对照实验;
 - 成本/token 与收益平衡在实施期用真实对局观察,结论记入本游戏 README。
 
 ## 9. 调度器(arena)
@@ -219,14 +230,20 @@ idle → running →(pause)⇄(resume / step)running → finished
 
 每回合:`引擎.legalMoves` → `session[side].push(当前问题)` → `player.pickMove` → `engine` 校验 → `applyMove` / `classify` → 写事件广播 → 换 side。
 
-异常与判罚(对双方完全对称):
+异常与打回/判罚(对双方完全对称):
 
 | 情形 | 处理 |
 |---|---|
-| 网络超时/5xx | 指数退避重试 3 次(参数统一),期间前端"思考中" |
-| 输出 JSON 解析失败 | 回告错误重试 1 次 |
-| 走法不在合法清单 | 回告"非法走法,请从清单选择"重试 1 次 |
-| 仍失败 / 超限 | **判该方负** `reason: timeout | illegal`,正常收尾并留痕 |
+| 输出 JSON 结构解析失败 | 回告"输出格式有误"重试 1 次(次数可配) |
+| 走法文本无法解析为走法(`parseMove` 失败) | **打回**:回告 parser 原因(如"无法理解你的走法,请用中文记谱或 a3-c3 形式"),本轮 `round++` |
+| 解析成功但走法非法(不在 `legalMoves`) | **打回**:回告**具体规则原因**(如"马被蹩腿""走后将帅照面"——源于 `engine.reason(move)`),**绝不枚举合法走法**;`ruleViolations++` |
+| 同一回合连续打回达上限 `illegalAttemptsLimit`(默认 3) | **判该方负** `reason: illegal-moves`,正常收尾留痕 |
+| 网络超时/5xx | 指数退避重试 3 次(参数统一,网络层),期间前端"思考中" |
+| 网络重试超限 | **判该方负** `reason: timeout`,正常收尾留痕 |
+
+- **打回 ≠ 异常**:是调试过程中的正常回合;UI 展示"被裁判打回一次"并可回看原因;
+- 每次打回都在 `session[side]` 追加 `rejection{ reason }`(即"裁判的讲解"),帮助模型下次走对——但**不含"正确答案枚举"**;
+- 终局事件 `finish` 携带双方 `ruleViolations` 作测评维度。
 
 控制接口:`POST /api/games/:id/pause|resume|step`(step 仅在暂停态可用)。
 
@@ -245,21 +262,25 @@ idle → running →(pause)⇄(resume / step)running → finished
 
 ## 11. 错误处理与鲁棒性
 
-- 模型超时/非法输出:见 §9 表;进程崩溃:日志已落盘,可基于日志恢复回放,不做自动续赛;
+- 模型超时/非法输出:见 §9 表;**打回是正常控制流**,不计入 `error` 事件,只写 `illegal-attempt`;
+- 进程崩溃:日志已落盘,可基于日志恢复回放,不做自动续赛;
+- `parseMove` 的所有失败原因都有稳定 `reason` 码,UI 文案基于码渲染;
 - 服务器与前端错误统一格式:`{ error: { code, message, hint } }`,界面文案基于 `hint`;
 - 空目录/缺配置:给出明确错误与配置示例。
 
 ## 12. 测试策略
 
 - **引擎单测**(优先级最高):七兵种走法、过河/不得送将/九宫/河界、将帅照面、将军与应将、将死、困毙、重复局面、无胜子和棋;每类红黑镜像断言(公证性);
-- **服务集成测试**:mock `Player`(脚本化走法),验证回合流程、日志落盘、暂停/单步、非法判负、隔离(构造 spy 断言一方上下文绝不含对方 analysis);
+- **记谱解析单测**(原则 D 的核心):`parseMove` 覆盖中文记谱(含同线双车需"前/后"字、同名子歧义)、坐标格式、非法文本、红黑两向;歧义走法一律解析失败走打回(绝不猜测);
+- **服务集成测试**:mock `Player` 脚本化走法,验证回合流程、日志落盘、暂停/单步;**连续非法 → 打回循环与 `illegalAttemptsLimit` 上限判负**;spy 断言打回 `reason` 中不含任何合法走法串;`ruleViolations` 进入 `finish`;隔离(断言一方上下文绝不含对方 analysis);
 - 真实 Anthropic 冒烟脚本(需 key)供手动联调;声音/渲染为前端手工验收部分。
 
 ## 13. 配置与运行
 
 ```bash
 npm install
-# config: base_url / api_key / red.model / black.model / carrySelfAnalysis / drawRepeat / timeoutMs …
+# config: base_url / api_key / red.model / black.model / carrySelfAnalysis /
+#            drawRepeat / illegalAttemptsLimit(默认3) / networkRetries(默认3) / timeoutMs …
 npm run dev      # 后端 + Vite 前端;打开 localhost:5173
 ```
 
