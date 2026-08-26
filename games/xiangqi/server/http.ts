@@ -294,13 +294,24 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
       res.status(err.status).json({ error: { code: err.code, message: err.message, hint: err.hint } });
       return;
     }
-    const e = err as (Error & { status?: number; type?: string }) | undefined;
-    if (e?.type === 'entity.parse.failed' || e?.status === 400) {
-      res.status(400).json({ error: { code: 'BAD_JSON', message: '请求体不是合法 JSON', hint: '请检查 body 格式' } });
+    const e = err as (Error & { status?: number; statusCode?: number; type?: string }) | undefined;
+    const status = e?.status ?? e?.statusCode;
+    // body-parser 等请求类错误(400..499):按原状态码回(如 413 超大 body),不误落 500
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      res.status(status).json({
+        error: {
+          code: typeof e?.type === 'string' && e.type !== '' ? e.type : 'BAD_REQUEST',
+          message: e instanceof Error ? e.message : String(e),
+          hint: '请求不符合预期',
+        },
+      });
       return;
     }
+    // 顶层兜底:只打 message/code,绝不打印原始错误对象字段(防密钥等敏感值入日志)
     // eslint-disable-next-line no-console
-    console.error('[xiangqi-http] 未捕获错误:', err);
+    console.error(
+      `[xiangqi-http] 未捕获错误: ${e instanceof Error ? e.message : String(err)} (${e instanceof Error ? e.name : 'unknown'})`,
+    );
     res.status(500).json({
       error: { code: 'INTERNAL', message: e instanceof Error ? e.message : String(err), hint: '服务器内部错误' },
     });

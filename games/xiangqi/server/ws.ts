@@ -31,6 +31,15 @@ function parseSince(req: IncomingMessage): number {
   }
 }
 
+/** 安全解码路径段:畸形百分号编码(如 `%ZZ`)抛 URIError,此处统一返回 null。 */
+function safeDecodePath(seg: string): string | null {
+  try {
+    return decodeURIComponent(seg);
+  } catch {
+    return null;
+  }
+}
+
 function serialize(evt: GameEvent): string {
   return JSON.stringify({ seq: evt.seq, event: evt });
 }
@@ -40,12 +49,25 @@ export function attachWsServer(server: HttpServer, store: GameStore): WebSocketS
   const wss = new WebSocketServer({ noServer: true });
 
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const match = GAME_PATH.exec(new URL(req.url ?? '/', 'http://localhost').pathname);
+    let pathname: string;
+    try {
+      pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+    } catch {
+      // 畸形/不可解析的请求目标:直接销毁,绝不允许异常逃逸到事件层崩溃进程
+      socket.destroy();
+      return;
+    }
+    const match = GAME_PATH.exec(pathname);
     if (!match) {
       socket.destroy();
       return;
     }
-    const gameId = decodeURIComponent(match[1]!);
+    const gameId = safeDecodePath(match[1]!);
+    if (gameId === null) {
+      // 非法百分号编码(如 /ws/games/%ZZ):销毁连接,不抛 URIError
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit('connection', ws, req, gameId);
     });

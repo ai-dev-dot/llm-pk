@@ -14,6 +14,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
+import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -178,6 +179,27 @@ function openWs<T = WsFrame>(port: number, gid: string, since = 0): WsSink<T> {
   });
   const closed = new Promise<void>((resolve) => ws.on('close', () => resolve()));
   return { ws, next, all: () => history, opened, closed };
+}
+
+/**
+ * 发一个原始(裸 TCP)HTTP/1.1 WebSocket upgrade 请求。
+ * 服务端无论握手成功还是直接 destroy,本函数在连接关闭/出错时即返回。
+ */
+function rawUpgrade(port: number, target: string): Promise<void> {
+  return new Promise((resolve) => {
+    const sock = net.connect(port, '127.0.0.1');
+    sock.on('error', () => resolve()); // 服务端 destroy → 连接重置
+    sock.on('close', () => resolve());
+    sock.write(
+      `GET ${target} HTTP/1.1\r\n` +
+        'Host: 127.0.0.1\r\n' +
+        'Upgrade: websocket\r\n' +
+        'Connection: Upgrade\r\n' +
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
+        'Sec-WebSocket-Version: 13\r\n' +
+        '\r\n',
+    );
+  });
 }
 
 /* ---------- 用例 1:REST 建局/列表/详情/400 ---------- */
@@ -427,6 +449,44 @@ describe('WS 实时流与断线重连', () => {
       expect(msg.event.type).toBe('error');
       expect(msg.event.code).toBe('GAME_NOT_FOUND');
       await sink.closed;
+    } finally {
+      await srv.dispose();
+    }
+  });
+});
+
+/* ---------- 用例 5:容错(复审 round 1) ---------- */
+
+describe('容错:畸形输入不崩溃', () => {
+  it('畸形 % 编码 upgrade(如 /ws/games/%ZZ)→ 连接被销毁,进程存活,后续 REST 仍 200', async () => {
+    const srv = await startServer();
+    try {
+      // 发送畸形 upgrade:path 段含非法百分号序列 %ZZ(裸 TCP,绕开 ws 客户端)
+      await rawUpgrade(srv.port, '/ws/games/%ZZ?since=0');
+      // 修复前:decodeURIComponent 抛 URIError → uncaughtException 崩溃进程;此处探测服务仍存活
+      const probe = await request(srv.server).get('/api/games');
+      expect(probe.status).toBe(200);
+      expect(probe.body.games).toEqual([]);
+      // 再发一次正规 upgrade,仍能正常握手(file 订阅仍在)
+      const sink = openWs(srv.port, 'ghost', 0);
+      await sink.opened;
+      const msg = await sink.next<{ seq: number; event: { type: string; code?: string } }>();
+      expect(msg.event.type).toBe('error');
+      await sink.closed;
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('超大 body → 413(不误落 500);错误体是统一 { error } 结构', async () => {
+    const srv = await startServer();
+    try {
+      const res = await request(srv.server)
+        .post('/api/games')
+        .send({ red: { baseUrl: 'http://x', apiKey: 'k', model: 'm', padding: 'x'.repeat(300_000) } });
+      expect(res.status).toBe(413);
+      expect(res.body.error).toBeDefined();
+      expect(res.body.error.code).toBeDefined();
     } finally {
       await srv.dispose();
     }
