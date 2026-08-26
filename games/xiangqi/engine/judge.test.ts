@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classify } from './judge';
+import { classify, classifyAll, snapshotKey } from './judge';
 import { isInCheck, legalMoves } from './moves';
 import { initialBoard, codeToSq, sqToIdx, opposite } from './board';
 import type { Board, Piece } from './board';
@@ -90,5 +90,70 @@ describe('classify(局面分类:将死 / 困毙 / 将军 / 进行中)', () => {
     });
     expect(isInCheck(b, 'red')).toBe(false);
     expect(classify(b, 'red')).toBe('ongoing');
+  });
+});
+
+describe('classifyAll(和棋三态:重复局面 / 无可胜子力 / 步数上限)', () => {
+  it('重复局面三次判和(brief 例:双将残局同时满足无胜子力,type=draw)', () => {
+    const b = emptyWith({ e1: { side: 'red', type: 'general' }, e10: { side: 'black', type: 'general' } });
+    const s = { board: b, turn: 'red' as const, halfMoves: 0, moveCount: 4, history: ['a1a1', 'a1a1', 'a1a1'] };
+    expect(classifyAll(s).type).toBe('draw');
+  });
+  it('双稳子消耗(车对车)达步数上限判和 → draw-max-moves', () => {
+    const b = emptyWith({
+      e1: { side: 'red', type: 'general' }, e10: { side: 'black', type: 'general' },
+      c5: { side: 'red', type: 'rook' }, c6: { side: 'black', type: 'rook' },
+    });
+    expect(classifyAll({ board: b, turn: 'red' as const, halfMoves: 0, moveCount: 200, history: [] }).reason)
+      .toBe('draw-max-moves');
+  });
+  it('重复局面:同 board+turn 快照在 history 计次≥3 → draw(draw-repeat)', () => {
+    const b = emptyWith({
+      e1: { side: 'red', type: 'general' }, d10: { side: 'black', type: 'general' },
+      c5: { side: 'red', type: 'rook' }, c6: { side: 'black', type: 'rook' },
+    });
+    const key = snapshotKey(b, 'red');
+    const s = { board: b, turn: 'red' as const, halfMoves: 0, moveCount: 10, history: [key, key, key] };
+    const r = classifyAll(s);
+    expect(r.type).toBe('draw');
+    expect(r.reason).toBe('draw-repeat');
+  });
+  it('重复局面不足三次不判和', () => {
+    const b = emptyWith({
+      e1: { side: 'red', type: 'general' }, d10: { side: 'black', type: 'general' },
+      c5: { side: 'red', type: 'rook' }, c6: { side: 'black', type: 'rook' },
+    });
+    const key = snapshotKey(b, 'red');
+    const s = { board: b, turn: 'red' as const, halfMoves: 0, moveCount: 10, history: [key, key] };
+    expect(classifyAll(s).type).not.toBe('draw');
+  });
+  it('无可胜子力:两侧均无车马炮兵 → draw(draw-no-mating-material)', () => {
+    const b = emptyWith({
+      e1: { side: 'red', type: 'general' }, d10: { side: 'black', type: 'general' },
+      f1: { side: 'red', type: 'advisor' }, f9: { side: 'black', type: 'advisor' },
+    });
+    const r = classifyAll({ board: b, turn: 'red' as const, halfMoves: 0, moveCount: 10, history: [] });
+    expect(r.type).toBe('draw');
+    expect(r.reason).toBe('draw-no-mating-material');
+  });
+  it('步数上限边界:moveCount<maxTotalMoves 不判和,>= 判和', () => {
+    const b = emptyWith({
+      e1: { side: 'red', type: 'general' }, e10: { side: 'black', type: 'general' },
+      c5: { side: 'red', type: 'rook' }, c6: { side: 'black', type: 'rook' },
+    });
+    const s = { board: b, turn: 'red' as const, halfMoves: 0, moveCount: 199, history: [] };
+    expect(classifyAll(s).type).not.toBe('draw');
+    expect(classifyAll({ ...s, moveCount: 200 }).reason).toBe('draw-max-moves');
+  });
+  it('maxTotalMoves 可通过第二参覆盖', () => {
+    const b = emptyWith({ e1: { side: 'red', type: 'general' }, d10: { side: 'black', type: 'general' } });
+    const s = { board: b, turn: 'red' as const, halfMoves: 0, moveCount: 8, history: [] };
+    expect(classifyAll(s, 8).reason).toBe('draw-max-moves');
+  });
+  it('判定次序:将死优先于步数上限 → checkmate 且 reason 为 null', () => {
+    const b = mateBoard();
+    const r = classifyAll({ board: b, turn: 'red' as const, halfMoves: 0, moveCount: 300, history: [] });
+    expect(r.type).toBe('checkmate');
+    expect(r.reason).toBeNull();
   });
 });
