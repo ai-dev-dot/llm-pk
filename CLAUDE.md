@@ -36,15 +36,18 @@ npm run build       # 产物校验(编译含 .vue)
 **唯一真相源 = 事件日志。** 一次对局是一条 append-only JSONL(`server/game-log.ts` 的 `GameEvent` union → `logs/<gameId>.jsonl`)。实时观战与回放都由事件重建,**同一算法**:
 
 ```
-server/arena.ts(仲裁) ──appendEvent──► logs/*.jsonl ──GET /:id/replay──► lib/replay.boardAt(seq)
+server/arena.ts(仲裁) ──appendEvent──► logs/*.jsonl ──GET /:id/replay─► web/src/lib/replay.boardAt(seq)
         │  onEvent 广播                                          ▲
         ▼                                                       └ 前端 useGame 实时 WS——与回放共用
     前端 WS(web/src/composables/useGame.ts)                         lib/replay.applyMoveToPieces(同源无偏差)
 ```
 
-- **回放是纯重放**:`replay.ts`/`lib/replay.ts` 只吃事件数组重建局面,零 arena/模型运行时调用;`seq` 单调、`since` 断线按序补发。
+- **回放是纯重放**:服务端 `GET /:id/replay` 只回传原始事件数组;**重建为前端纯函数 `web/src/lib/replay.ts`**(`boardAt`/`applyMoveToPieces`),零 arena/模型运行时调用;`seq` 单调、`since` 断线按序补发;`useGame` 与回放共用同一 `applyMoveToPieces` ⇒ 「回放 vs 实时」双跑零偏差。
+- **平台化 Game 接口(已落地)**:`server/game.ts` 泛型仲裁接口,象棋实现 `server/games/xiangqi-game.ts` 封印全部 engine 纯函数;`arena.ts` 只吃 `this.game.*`,新游戏接入仅新增一个实现文件、调度骨架零改。
 - **公证 = 引擎是全司法权**:`engine/`(types/board/moves/attack/judge/notation/resolver/render)全纯函数、零 IO;单一解析入口 `parseMove`/`parseResolve`;**红黑镜像测试**(同断言跑两侧)。
 - **自由出招(原则 D)**:模型只收棋盘+规则,自提中文记谱/坐标;非法/不可解析被**打回**(`engineReason` 只讲原因、绝不枚举合法走法),打回次数是测评指标(教学前/后分计)。打回解析结果按 `(cacheKey…)` 缓存,同回合只算一次。
+- **流式思考(实时)**:`AnthropicPlayer` 默认 `stream:true`(SSE 解析 `input_json_delta`,非 SSE 响应自动回退非流式);analysis 增量经 `ctx.onThought` → arena `onLive` 广播 → WS 以 `seq:0` `player-message` 帧实时推流(不落日志、不占日志 seq、不参与断线补发;重连只显示最终 analysis)。前端 `useGame` 对 `player-message` 在 seq 过滤前特判累积 `liveThoughts`。
+- **中文记谱(参照展示)**:`engine/notation.ts` 增 `moveToChinese(move,board,side)` 纯函数(红中文列号/黑阿拉伯、进退平、同线前/后);`move` 事件与历史带 `notation` 旁注,前端记谱履历优先展示。
 - **隔离(原则 C)**:`server/session.ts` 红黑各自独立会话,`selfThoughts` 回显最近 N 步(默认 6),对方 analysis 绝不出现;Arena 组装上下文时只取本方思考+公共记谱。
 - **守卫在 arena**:`illegalAttemptsLimit=3`、`drawRepeat`(默认 3)、`maxTotalMoves=200`、`maxCostPerGame`、网络退避重试——配置与 `begin.rules` 快照同一来源。
 - **平台化薄协议**:`Game<State,Move>` 接口(见 spec §3)——第二个游戏接入时只新增实现文件,骨架(调度/日志/回放/前端订阅)零改。

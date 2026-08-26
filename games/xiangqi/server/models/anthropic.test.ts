@@ -329,3 +329,65 @@ describe('网络错误', () => {
     expect((err as Error).message).toMatch(/读响应体失败/);
   });
 });
+/* ---------- G3:SSE 流式(stream:true + onThought 实时增量) ---------- */
+
+describe('AnthropicPlayer SSE 流式(G3)', () => {
+  /** 拼一段 Anthropic SSE:事件行用 \n\n 分隔。 */
+  function sseEvent(json: unknown): string {
+    return `event: message\ndata: ${JSON.stringify(json)}\n\n`;
+  }
+  function sseBody(): string {
+    const toolInputJson = '{"analysis":"我思考中——","move":"h3-e3"}';
+    // 关键:partial_json 成段给出,input 按分析/其余拆三段,模拟流式递增
+    return [
+      { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"analysis":"我思考' } },
+      { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '中——"' } },
+      { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: ',"move":"h3-e3"}' } },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { input_tokens: 100, output_tokens: 20 } },
+    ]
+      .map(sseEvent)
+      .join('');
+  }
+
+  it('流式:请求体含 stream:true;onThought 边收 analysis 增量;最终 {analysis, move} 与 usage 正确', async () => {
+    const chunks: string[] = [];
+    const ctx = { ...fakeCtx, onThought: (c: string) => chunks.push(c) };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(sseBody(), { status: 200, headers: { 'content-type': 'text/event-stream' } })),
+    );
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+
+    const c = await p.pickMove(ctx);
+
+    expect(c.move).toBe('h3-e3');
+    expect(c.analysis).toBe('我思考中——');
+    expect(c.usage).toMatchObject({ promptTokens: 100, completionTokens: 20 });
+    // 增量回调:第一段含「我思考」,第二段含「中——」
+    expect(chunks.join('')).toBe('我思考中——');
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    // 请求带 stream:true
+    const [url, init] = (vi.mocked(fetch).mock.calls[0]!) as [string, RequestInit];
+    expect(url).toBe('http://x/v1/messages');
+    const body = JSON.parse(init.body as string);
+    expect(body.stream).toBe(true);
+    expect(body.tools[0].name).toBe('pick_move');
+  });
+
+  it('流式:usage 缺失时回落 0(不抛)', async () => {
+    const ctx = { ...fakeCtx, onThought: () => {} };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          'event: message\ndata: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\\"analysis\\":\\"a\\",\\"move\\":\\"h3-e3\\"}"}}\n\n',
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        ),
+      ),
+    );
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    const c = await p.pickMove(ctx);
+    expect(c.move).toBe('h3-e3');
+    expect(c.usage).toEqual({ promptTokens: 0, completionTokens: 0, costUsd: 0 });
+  });
+});

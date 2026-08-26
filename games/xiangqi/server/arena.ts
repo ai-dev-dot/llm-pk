@@ -1,34 +1,26 @@
 import { EventEmitter } from 'node:events';
-import { cloneBoard, initialBoard, opposite, pieceAt, sqToCode, type Board } from '../engine/board';
-import { moveToKey, requireApply } from '../engine/attack';
-import { classifyAll, snapshotKey } from '../engine/judge';
-import { parseMoveRaw } from '../engine/notation';
-import { clearResolveCache, engineReason, parseResolve } from '../engine/resolver';
-import { renderAscii } from '../engine/render';
+import type { Board } from '../engine/board';
+import type { Move } from '../engine/moves';
 import type { Side } from '../engine/types';
-import {
-  appendEvent,
-  type GameEvent,
-  type GameEventInput,
-  type GameLogSink,
-  type GameRulesSnapshot,
-  type RuleViolations,
-  type Usage,
-} from './game-log';
+import { xiangqiGame } from './games/xiangqi-game';
+import type { Game } from './game';
+import { appendEvent, type GameEvent, type GameEventInput, type GameLogSink, type GameRulesSnapshot, type RuleViolations, type Usage } from './game-log';
 import { DEFAULT_CONTEXT_BUDGET_TOKENS, SideSession } from './session';
 
 /**
  * `Arena` —— 单局棋盘调度器(spec §9 回合数据流 + 打回循环 + 守卫)。
+ * 平台化(spec §3):只吃 `Game<S,M>` 接口,引擎函数零依赖;第二次接入新游戏时
+ * 只新增实现文件,本站调度/日志/回放骨架零改。
  *
  * 职责:
- * - 回合仲裁:行棋方 → 会话装配上下文 → `player.pickMove` → `parseResolve` → 拒则打回/判负,
- *   合法则落子并 `classifyAll` 判定结束/继续;
+ * - 回合仲裁:行棋方 → 会话装配上下文 → `player.pickMove` → `game.resolve` → 拒则打回/判负,
+ *   合法则 `game.apply` 落子并 `game.classify` 判定结束/继续;
  * - 状态机:`idle → running ⇄(pause/resume/step)paused → finished`(pause/resume 幂等);
  * - 守卫:打回上限(`illegal-moves`)、网络重试超限(`timeout`)、步数上限(`draw-max-moves`)、
- *   成本上限(`draw-cost-limit`);重复局面由 `classifyAll`(history 快照)判 `draw-repeat`;
- * - 每局开始 `clearResolveCache()`,所有经 `appendEvent` 的事件即广播(EventEmitter + onEvent 回调)。
+ *   成本上限(`draw-cost-limit`);重复局面由 `game.classify`(history 快照)判 `draw-repeat`;
+ * - 每局开始 `game.clearCache()`,所有经 `appendEvent` 的事件即广播(EventEmitter + onEvent 回调)。
  *
- * 注入边界:Player 接口与解析(parseResolve/engineReason)均为依赖注入/模块依赖,便于 mock 测试;
+ * 注入边界:Player 接口与 Game 均为依赖注入,便于 mock 测试;
  * 日志 sink 一局一流,终局 `end()`(WriteStream 时)。
  */
 
@@ -57,13 +49,15 @@ export interface Player {
   pickMove(ctx: MoveContext): Promise<MoveChoice>;
 }
 
-/** spec §6 `MoveContext`:传给棋手的本回合输入。 */
+/** spec §6 `MoveContext`:传给棋手的本回合输入(文本化,原则 A)。 */
 export interface MoveContext {
   side: Side;
   asciiBoard: string;
   history: PlyInfo[];
   selfThoughts: { move: string; analysis: string }[];
   rejection?: { round: number; reason: string };
+  /** 流式思考回调(player 可选):analysis 边收边调,供 UI 实时展示(见 server/ws.ts onLive)。 */
+  onThought?: (chunk: string) => void;
 }
 
 /** 网络型错误:Player 应抛出以触发 arena 指数退避重试(超时/5xx/断网)。 */
@@ -89,8 +83,10 @@ export interface ArenaPlayerConfig {
   systemPrompt?: string;
 }
 
-export interface ArenaConfig {
+export interface ArenaConfig<S = Board, M = Move> {
   gameId: string;
+  /** 规则引擎(平台化切面,spec §3):必填或默认象棋实现。 */
+  game?: Game<S, M>;
   red: ArenaPlayerConfig;
   black: ArenaPlayerConfig;
   sink: GameLogSink;
@@ -115,18 +111,25 @@ const DEFAULT_NETWORK_RETRY_BASE_MS = 200;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// G3 流式节流:累计到 ≥24 新增字符 或 ≥120ms 才 flush 一次 live 帧,防刷屏。
+const LIVE_MIN_CHUNK = 24;
+const LIVE_MAX_INTERVAL_MS = 120;
+
 /* ---------- Arena ---------- */
 
-export class Arena {
+export class Arena<S = Board, M = Move> {
   /** 事件总线:每事件以 'event' 广播;终局额外以 'finish' 广播。 */
   public readonly onEvent = new EventEmitter();
+  /** 实时思考总线(G3):analysis 流式增量以 'thought' 广播({ side, chunk }),不落日志。 */
+  public readonly onLive = new EventEmitter();
 
+  private readonly game: Game<S, M>;
   private state_: ArenaState = 'idle';
-  private board!: Board;
+  private board!: S;
   private turn_: Side = 'red';
   private moveCount_ = 0;
   private halfMoves_ = 0;
-  /** 「行棋方行动前」的局面快照键(contract:classifyAll 判重复局面)。 */
+  /** 「行棋方行动前」的局面快照键(contract:game.classify 判重复局面)。 */
   private readonly history: string[] = [];
   private readonly moveHistory: PlyInfo[] = [];
   private sessions_!: Record<Side, SideSession>;
@@ -137,6 +140,10 @@ export class Arena {
   private readonly sideRejectedEver: Record<Side, boolean> = { red: false, black: false };
   private totalCostUsd = 0;
   private finishRequested_ = false;
+
+  // G3 流式节流状态(仅当有 onLive 订阅者时 flush)
+  private liveBuf = '';
+  private lastLiveFlushAt = 0;
 
   // 打回循环(本回合内)
   private illegalAttempts = 0;
@@ -154,8 +161,9 @@ export class Arena {
   private sinkEnded = false;
   private aborted = false;
 
-  constructor(private readonly cfg: ArenaConfig) {
+  constructor(private readonly cfg: ArenaConfig<S, M>) {
     if (!cfg.gameId) throw new Error('Arena 需要 gameId');
+    this.game = cfg.game ?? (xiangqiGame as unknown as Game<S, M>);
     const rules = cfg.rules ?? {};
     if ((rules.illegalAttemptsLimit ?? DEFAULT_ILLEGAL_LIMIT) < 1) throw new RangeError('illegalAttemptsLimit 必须 ≥1');
     if ((rules.networkRetries ?? DEFAULT_NETWORK_RETRIES) < 0) throw new RangeError('networkRetries 必须 ≥0');
@@ -194,21 +202,46 @@ export class Arena {
   }
 
   /** 当前行棋一步的上下文(测试/审计可回看;动作侧取 turn_)。 */
-  currentMoveContext(side: Side): MoveContext {
+  currentMoveContext(side: Side, onThought?: (chunk: string) => void): MoveContext {
+    const live = onThought ?? ((chunk: string) => this.onLiveThought(side, chunk));
     return {
       side,
-      asciiBoard: renderAscii(this.board),
+      asciiBoard: this.game.render(this.board),
       history: this.moveHistory.map((p) => ({ ...p })),
       selfThoughts: this.sessionOf(side).selfThoughts().map((t) => ({ move: t.move, analysis: t.analysis })),
       rejection: this.currentRejection ? { ...this.currentRejection } : undefined,
+      onThought: live,
     };
+  }
+
+  /** G3:累积流式 chunk,达阈值才广播一次 thought 帧。 */
+  private onLiveThought(side: Side, chunk: string): void {
+    this.liveBuf += chunk;
+    const now = Date.now();
+    if (this.liveBuf.length >= LIVE_MIN_CHUNK || now - this.lastLiveFlushAt >= LIVE_MAX_INTERVAL_MS) {
+      this.flushLive(side);
+    }
+  }
+
+  private flushLive(side: Side): void {
+    if (this.liveBuf === '') return;
+    const chunk = this.liveBuf;
+    this.liveBuf = '';
+    this.lastLiveFlushAt = Date.now();
+    this.onLive.emit('thought', { side, chunk });
+  }
+
+  /** 终局/离线时清空未 flush 的思考残留。 */
+  private drainLive(): void {
+    this.onLive.removeAllListeners('thought');
+    this.liveBuf = '';
   }
 
   /* ---------- 状态机 ---------- */
 
   async start(): Promise<void> {
     if (this.state_ !== 'idle') throw new Error(`start 只能在 idle 态调用(当前 ${this.state_})`);
-    clearResolveCache();
+    this.game.clearCache();
     this.reset();
     this.state_ = 'running';
     this.emitBegin();
@@ -260,9 +293,9 @@ export class Arena {
   /** 单半回合:重复局面快照 → 打回循环 → 落子/分类 → 事件与换方。 */
   private async playTurn(): Promise<void> {
     const side = this.turn_;
-    // contract:每回合行棋方行动前记录局面快照(供 classifyAll 判 draw-repeat)
-    this.history.push(snapshotKey(this.board, side));
-    this.sessionOf(side).setBoard(renderAscii(this.board));
+    // contract:每回合行棋方行动前记录局面快照(供 game.classify 判 draw-repeat)
+    this.history.push(this.game.snapshotKey(this.board, side));
+    this.sessionOf(side).setBoard(this.game.render(this.board));
     this.illegalAttempts = 0;
     this.rejectionRound = 0;
     this.currentRejection = undefined;
@@ -271,64 +304,68 @@ export class Arena {
       if (this.finishRequested_) return;
       const choice = await this.pickMoveWithRetry(side);
       if (this.finishRequested_) return;
+      // 步本回合 flush(回合结束即落,防止节流残余滞留)
+      this.flushLive(side);
 
       const cacheKey = `${this.cfg.gameId}|${this.halfMoves_}|${this.rejectionRound}`;
-      const outcome = parseResolve(choice.move, this.board, side, cacheKey);
+      const outcome = this.game.resolve(choice.move, this.board, side, cacheKey);
 
       if (!outcome.ok) {
         this.illegalAttempts++;
         this.rejectionRound++;
         const v = this.bumpViolation(side);
         this.sideRejectedEver[side] = true;
-        // 精确打回文案:对文本再解析取「尝试的走法」供 engineReason 给出具体起因
-        const parsed = parseMoveRaw(choice.move, this.board, side);
-        const reasonText = engineReason(outcome.code, parsed.ok ? parsed.move : undefined, this.board, side);
         this.emit({
           type: 'illegal-attempt',
           side,
           round: this.rejectionRound,
-          reason: reasonText,
+          reason: outcome.reasonText,
           violations: { ...v },
           attempt: { text: choice.move },
         });
         if (this.illegalAttempts >= (this.cfg.rules?.illegalAttemptsLimit ?? DEFAULT_ILLEGAL_LIMIT)) {
-          this.finishGame({ winner: opposite(side), reason: 'illegal-moves' });
+          this.finishGame({ winner: this.game.opposite(side), reason: 'illegal-moves' });
           return;
         }
         // 教学:同回合覆盖 rejection,并携带原因重试
-        this.sessionOf(side).setRejection({ reason: reasonText });
-        this.currentRejection = { round: this.rejectionRound, reason: reasonText };
+        this.sessionOf(side).setRejection({ reason: outcome.reasonText });
+        this.currentRejection = { round: this.rejectionRound, reason: outcome.reasonText };
         continue;
       }
 
       // 合法:落子
       const mv = outcome.move;
-      const captured = pieceAt(this.board, mv.to);
-      this.board = requireApply(this.board, mv);
+      const toSq = this.game.destination(mv);
+      const captured = toSq === null ? null : this.game.pieceAt(this.board, toSq);
+
+      const moveMeta = this.game.moveId(mv, this.board);
+      const moveKey = this.game.moveKey(mv);
+      this.board = this.game.apply(this.board, mv);
       this.moveCount_++;
       this.halfMoves_++;
-      const nextSide = opposite(side);
+      const nextSide = this.game.opposite(side);
       const usage = choice.usage;
       if (usage?.costUsd) this.totalCostUsd += usage.costUsd;
-      const moveKey = moveToKey(mv);
-      this.moveHistory.push({ move: moveKey });
-      this.sessionOf(side).pushTurnResult({ move: moveKey, analysis: choice.analysis, usage });
+      this.moveHistory.push({ move: moveKey, notation: moveMeta.notation });
+      this.sessionOf(side).pushTurnResult({ move: moveKey, notation: moveMeta.notation, analysis: choice.analysis, usage });
       this.emit({
         type: 'move',
         turn: side,
-        move: { from: sqToCode(mv.from), to: sqToCode(mv.to) },
+        move: { from: moveMeta.from, to: moveMeta.to, notation: moveMeta.notation },
         analysis: choice.analysis,
         elapsedMs: choice.elapsedMs,
         usage,
         legal: true,
       });
-      if (captured) this.emit({ type: 'captured', side, piece: captured, at: sqToCode(mv.to) });
+      if (captured) this.emit({ type: 'captured', side, piece: captured, at: toSq === null ? '' : this.game.squareId(toSq) });
 
-      const verdict = classifyAll(
-        { board: this.board, turn: nextSide, halfMoves: this.halfMoves_, moveCount: this.moveCount_, history: this.history },
-        this.cfg.rules?.maxTotalMoves ?? DEFAULT_MAX_TOTAL_MOVES,
-        this.cfg.rules?.drawRepeat ?? 3, // B3:drawRepeat 接线(与 begin.rules.drawRepeat 同源生效)
-      );
+      const verdict = this.game.classify(this.board, nextSide, {
+        halfMoves: this.halfMoves_,
+        moveCount: this.moveCount_,
+        history: this.history,
+        maxTotalMoves: this.cfg.rules?.maxTotalMoves,
+        drawRepeat: this.cfg.rules?.drawRepeat,
+      });
       if (verdict.type === 'check') this.emit({ type: 'check', side: nextSide });
 
       if (verdict.type === 'checkmate' || verdict.type === 'stalemate') {
@@ -365,7 +402,7 @@ export class Arena {
       } catch (err) {
         if (!isNetworkError(err)) throw err;
         if (attempt >= retries) {
-          this.finishGame({ winner: opposite(side), reason: 'timeout' });
+          this.finishGame({ winner: this.game.opposite(side), reason: 'timeout' });
           return { analysis: '', move: '' };
         }
         attempt++;
@@ -440,6 +477,7 @@ export class Arena {
     if (this.finishRequested_) return;
     this.finishRequested_ = true;
     this.state_ = 'finished';
+    this.drainLive();
     this.emit({
       type: 'finish',
       winner: opts.winner,
@@ -477,7 +515,7 @@ export class Arena {
   }
 
   private reset(): void {
-    this.board = cloneBoard(initialBoard());
+    this.board = this.game.initialState();
     this.turn_ = 'red';
     this.moveCount_ = 0;
     this.halfMoves_ = 0;

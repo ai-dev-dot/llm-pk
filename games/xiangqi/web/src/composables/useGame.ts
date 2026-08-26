@@ -339,6 +339,12 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
         return;
       }
       const seq = frame.seq;
+      // G3 流式思考:server 以 seq:0 帧实时推 player-message(player-message 不落日志,
+      // 不占日志 seq)。在 seq 过滤之前特判:累积 liveThoughts,不推进 lastSeq/不重复。
+      if (frame.event?.type === 'player-message') {
+        applyEvent(frame.event);
+        return;
+      }
       if (frame.event?.type === 'error' && seq === 0) {
         applyEvent(frame.event);
         return;

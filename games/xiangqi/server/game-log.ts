@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { createWriteStream, readFileSync, type WriteStream } from 'node:fs';
 import { dirname } from 'node:path';
-import type { PieceType, Side } from '../engine/types';
+import type { Side } from '../engine/types';
 
 /**
  * 对局事件日志 —— 一局一文件 append-only JSONL,实时与回放的唯一真相源(spec §5/§10)。
@@ -80,7 +80,7 @@ export interface CheckEvent extends BaseEvent {
 export interface CapturedEvent extends BaseEvent {
   type: 'captured';
   side: Side; // 吃子方
-  piece: { type: PieceType; side: Side };
+  piece: { type: string; side: Side };
   at: string; // 被吃棋子所在格
 }
 

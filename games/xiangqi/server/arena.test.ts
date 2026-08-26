@@ -127,8 +127,8 @@ describe('Arena 回合流转与暂停/单步/恢复', () => {
 
     expect(arena.state).toBe('finished');
     expect(asMoves(events)).toEqual([
-      { from: 'a4', to: 'a5' },
-      { from: 'i7', to: 'i6' },
+      { from: 'a4', to: 'a5', notation: '兵九进一' },
+      { from: 'i7', to: 'i6', notation: '卒9进1' },
     ]);
     const moves = events.filter((e): e is MoveEvent => e.type === 'move');
     expect(moves[0]!.turn).toBe('red');
@@ -351,6 +351,55 @@ describe('Arena 网络重试', () => {
     expect(retries.map((e) => e.attempt)).toEqual([1, 2, 3]);
     expect(lastFinish(events)!.reason).toBe('timeout');
     expect(lastFinish(events)!.winner).toBe('black');
+  });
+});
+
+/* ---------- G3:onLive 流式思考广播 ---------- */
+
+describe('Arena onLive 流式思考(G3)', () => {
+  it('player 通过 ctx.onThought 回调 → onLive thought 事件节流后广播', async () => {
+    const thinker: Player = {
+      side: 'red',
+      model: 'fake-live',
+      async pickMove(ctx) {
+        // 模拟流式输出:多段小 chunk,arena 会按阈值合并/即时 flush
+        ctx.onThought?.('先手');
+        ctx.onThought?.('架中炮,瞄');
+        ctx.onThought?.('七路卒');
+        await sleep(5); // 超过 120ms 间隔会 flush(此处不受间隔约束,靠字符累积)
+        return { analysis: '完整分析', move: 'h3-e3' };
+      },
+    };
+    const arena = baseArena('g-live1', {
+      red: { player: thinker },
+      black: { player: scriptPlayer('black', ['i7-i6']) },
+      rules: { maxTotalMoves: 2 },
+    });
+    const live: { side: Side; chunk: string }[] = [];
+    arena.onLive.on('thought', (p) => live.push(p));
+
+    await arena.start();
+
+    // move 完成后需 flush;chunk 合并为一段非空
+    expect(live.length).toBeGreaterThanOrEqual(1);
+    const joined = live.map((l) => l.chunk).join('');
+    expect(joined).toContain('先手');
+    expect(joined).toContain('七路卒');
+    // 不落日志:events 里无 player-message
+    expect(collect(arena).some((e) => e.type === 'player-message')).toBe(false);
+  });
+
+  it('终局 drain:onLive 无订阅残留(事后 emit 不报)', () => {
+    const arena = baseArena('g-live2', { rules: { maxTotalMoves: 2 } });
+    const events = collect(arena);
+    void arena.start().then(() => {
+      // finish 后 onLive listener 已清空,直接 emit 不触发(无抛出即可)
+      arena.onLive.emit('thought', { side: 'red', chunk: 'x' });
+    });
+    // 用 promise 让上面 then 执行完
+    return new Promise<void>((r) => setTimeout(r, 40)).then(() => {
+      expect(events.some((e) => e.type === 'finish')).toBe(true);
+    });
   });
 });
 

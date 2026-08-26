@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { Board, Side } from './board';
 import { cloneBoard, initialBoard, sqToIdx, sqToCode } from './board';
-import { parseMove } from './notation';
+import type { Move } from './moves';
+import { parseMove, moveToChinese } from './notation';
 
 /** 解析并断言成功,返回 Move */
 function okMove(text: string, board: Board, side: Side) {
@@ -226,5 +227,59 @@ describe('非法/未识别', () => {
   it('纯乱文 → PARSER_INVALID', () => {
     expect(failReason('随便说说', b, 'red')).toBe('PARSER_INVALID');
     expect(failReason('', b, 'red')).toBe('PARSER_INVALID');
+  });
+});
+/* ---------- moveToChinese:中文记谱生成(红/黑、进/退/平、同线前/后) ---------- */
+
+describe('moveToChinese 中文记谱生成', () => {
+  const codeToSq = (s: string) => ({ file: s.charCodeAt(0) - 97, rank: Number(s.slice(1)) - 1 });
+  /** 直接构造 Move(纯生成测试,不校验合法性) */
+  const m = (from: string, to: string): Move => ({ from: codeToSq(from), to: codeToSq(to) });
+  /** 在指定格放红/黑车(用于退子等需摆子的场景) */
+  function placeRook(board: Board, sq: string, side: Side): void {
+    const sqObj = codeToSq(sq);
+    board[sqObj.rank * 9 + sqObj.file] = { side, type: 'rook' };
+  }
+
+  const b = initialBoard();
+  it('红方直线进:车一进一(i1→i2)', () => {
+    expect(moveToChinese(m('i1', 'i2'), b, 'red')).toBe('車一进一');
+  });
+  it('红方直线退:車一退一(摆子在 i2 → i1)', () => {
+    const bb = cloneBoard(initialBoard());
+    bb[sqToIdx(8, 0)] = null; // 清 i1 原車
+    placeRook(bb, 'i2', 'red');
+    expect(moveToChinese(m('i2', 'i1'), bb, 'red')).toBe('車一退一');
+  });
+  it('红方平:炮二平五(h3→e3)', () => {
+    expect(moveToChinese(m('h3', 'e3'), b, 'red')).toBe('砲二平五');
+  });
+  it('黑方列号阿拉伯数字 + 进:卒9进1(i7→i6)', () => {
+    expect(moveToChinese(m('i7', 'i6'), b, 'black')).toBe('卒9进1');
+  });
+  it('黑方退:車9退1(摆子在 i6 → i7,清原 i10 車避免同列前缀)', () => {
+    const bb = cloneBoard(initialBoard());
+    bb[sqToIdx(8, 9)] = null; // 清 i10 原車,否则 i 列双车会触发前/后前缀
+    placeRook(bb, 'i6', 'black');
+    expect(moveToChinese(m('i6', 'i7'), bb, 'black')).toBe('車9退1');
+  });
+  it('黑方平:砲8平5(h8→e8)', () => {
+    expect(moveToChinese(m('h8', 'e8'), b, 'black')).toBe('砲8平5');
+  });
+  it('红方同线双子:后車(rank 小)标记后', () => {
+    const p = redRookPairBoard();
+    expect(moveToChinese(m('e1', 'e2'), p, 'red')).toMatch(/^后車/);
+    expect(moveToChinese(m('e8', 'e7'), p, 'red')).toMatch(/^前車/);
+  });
+  it('黑方同线双子:黑方视角前=rank 小,后=rank 大', () => {
+    const p = blackRookPairBoard();
+    expect(moveToChinese(m('e6', 'e5'), p, 'black')).toMatch(/^前車/);
+    expect(moveToChinese(m('e9', 'e10'), p, 'black')).toMatch(/^后車/);
+  });
+  it('解析回程:moveToChinese 输出可被 parseMove 消解(红炮平五)', () => {
+    const cn = moveToChinese(m('h3', 'e3'), b, 'red');
+    const r = parseMove(cn, b, 'red');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.move).toEqual({ from: { file: 7, rank: 2 }, to: { file: 4, rank: 2 } });
   });
 });

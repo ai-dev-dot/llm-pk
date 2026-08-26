@@ -333,4 +333,21 @@ describe('useGame 断线续传', () => {
     expect(calls).toContain('/api/games/g1/step');
     g.controls.destroy();
   });
+
+  it('G3 seq:0 的 player-message 帧不被丢弃、也不推进 lastSeq', () => {
+    const { factory, sockets } = makeFactory();
+    const g = useGame('g1', { wsFactory: factory });
+    // server 实时流式:seq:0 player-message 帧在 begin(seq 1)之前/之后都可能到达
+    sockets[0]!.onmessage({ data: JSON.stringify({ seq: 0, event: { seq: 0, ts: 't', type: 'player-message', side: 'red', phase: 'thought', content: '先手' } }) });
+    expect(g.liveThoughts.red).toBe('先手');
+    sockets[0]!.onmessage({ data: frame(1, beginEv()) });
+    sockets[0]!.onmessage({ data: JSON.stringify({ seq: 0, event: { seq: 0, ts: 't', type: 'player-message', side: 'red', phase: 'thought', content: '架中炮' } }) });
+    expect(g.liveThoughts.red).toBe('先手架中炮');
+    // lastSeq 不被 seq:0 污染:随后 seq2 move 正常应用并推进到 2
+    expect(g.lastSeq).toBe(1);
+    sockets[0]!.onmessage({ data: frame(2, moveEv({ seq: 2, turn: 'red', move: { from: 'h3', to: 'e3' } })) });
+    expect(g.lastSeq).toBe(2);
+    expect(g.moves).toHaveLength(1);
+    g.controls.destroy();
+  });
 });

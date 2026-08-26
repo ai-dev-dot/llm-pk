@@ -733,3 +733,84 @@ describe('赛后复盘接线(review 独立凭据与降级)', () => {
   });
 });
 
+/* ---------- G3:WS 实时流式思考(player-message seq:0 帧) ---------- */
+
+describe('WS 流式思考(G3)', () => {
+  it('player 通过 ctx.onThought 推送 → 实时收到 seq:0 player-message;日志与 replay 不含', async () => {
+    const liveRed = gatedLivePlayer('red', ['a4-a5'], ['先手架中炮,意图占中路']);
+    const black = gatePlayer('black', ['i7-i6']);
+    const srv = await startServer((side) => (side === 'red' ? liveRed.player : black.player));
+    try {
+      const { id } = await createGame(srv.server, baseBody({ config: { maxTotalMoves: 2 } }));
+      const arena = srv.registry.get(id)!;
+      await waitFor(() => arena.moveCount === 0);
+
+      const sink = openWs(srv.port, id, 0);
+      await sink.opened;
+
+      // 放行红 → 实时收到 live(seq:0)与 move(seq:2)
+      liveRed.releaseNext();
+      await waitFor(() => arena.moveCount === 1);
+
+      const frames = sink.all();
+      const liveFrames = frames.filter((f) => f.event.type === 'player-message');
+      expect(liveFrames.length).toBeGreaterThanOrEqual(1);
+      for (const f of liveFrames) expect(f.seq).toBe(0);
+      const liveText = liveFrames.map((f) => (f.event as { content?: string }).content ?? '').join('');
+      expect(liveText).toContain('中炮');
+      expect(frames.some((f) => f.event.type === 'move' && f.seq === 2)).toBe(true);
+
+      // 日志与 replay 不落 player-message(仅实时)
+      const rep = await request(srv.server).get(`/api/games/${id}/replay`);
+      expect(rep.body.events.some((e: GameEvent) => e.type === 'player-message')).toBe(false);
+      sink.ws.close();
+      await sink.closed;
+    } finally {
+      await srv.dispose();
+    }
+  });
+});
+
+/** 闸门 + 流式思考:pickMove 阻塞直到 releaseNext;放行时经 ctx.onThought 吐两段 analysis。 */
+function gatedLivePlayer(
+  side: Side,
+  script: string[],
+  thoughts: readonly string[],
+): { player: Player; releaseNext: () => void } {
+  const releaseQueue: Array<() => void> = [];
+  const waiters: Array<{ choice: MoveChoice; resolve: (c: MoveChoice) => void }> = [];
+  let i = 0;
+  const nextChoice = (): MoveChoice => ({
+    analysis: thoughts[(i - 1) % thoughts.length] ?? '',
+    move: script[(i - 1) % script.length],
+  });
+  const player: Player = {
+    side,
+    model: `live-${side}`,
+    async pickMove(ctx): Promise<MoveChoice> {
+      i += 1;
+      const choice = nextChoice();
+      const deliver = () => {
+        // 模拟流式输出:完整 analysis 切成两段 callback
+        const t = choice.analysis;
+        const half = Math.ceil(t.length / 2);
+        ctx.onThought?.(t.slice(0, half));
+        ctx.onThought?.(t.slice(half));
+        return choice;
+      };
+      const release = releaseQueue.shift();
+      if (release) {
+        release();
+        return deliver();
+      }
+      return new Promise<MoveChoice>((resolve) => waiters.push({ choice, resolve: (c) => resolve(deliver()) }));
+    },
+  };
+  const releaseNext = () => {
+    const waiter = waiters.shift();
+    if (waiter) waiter.resolve(waiter.choice);
+    else releaseQueue.push(() => {});
+  };
+  return { player, releaseNext };
+}
+

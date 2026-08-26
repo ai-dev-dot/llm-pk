@@ -16,6 +16,7 @@ import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { GameRecord } from './http';
 import type { GameEvent } from './game-log';
+import type { Side } from '../engine/types';
 
 type GameStore = Map<string, GameRecord>;
 
@@ -102,6 +103,18 @@ export function attachWsServer(server: HttpServer, store: GameStore): WebSocketS
     const listener = (evt: GameEvent) => sendFrame(serialize(evt));
     rec.arena.onEvent.on('event', listener);
 
+    // 1b) G3 流式思考独立 live 通道:seq:0 帧(不占日志 seq,不参与断线补发);
+    //     边收边推,重连后只补最终 analysis(move 事件),不重演流式碎片。
+    const liveListener = (p: { side: Side; chunk: string }) => {
+      sendFrame(
+        JSON.stringify({
+          seq: 0,
+          event: { seq: 0, ts: new Date().toISOString(), type: 'player-message', side: p.side, phase: 'thought', content: p.chunk },
+        }),
+      );
+    };
+    rec.arena.onLive.on('thought', liveListener);
+
     // 2) 再同步补发 since 之后的历史(单线程内无 await 间隙 ⇒ 不会与实时重复/错位);
     for (const evt of rec.events) {
       if (evt.seq > since) sendFrame(serialize(evt));
@@ -109,6 +122,7 @@ export function attachWsServer(server: HttpServer, store: GameStore): WebSocketS
 
     ws.on('close', () => {
       rec.arena.onEvent.off('event', listener);
+      rec.arena.onLive.off('thought', liveListener);
     });
     ws.on('error', () => {
       /* 连接被对端重置等,清理由 close 兜底 */

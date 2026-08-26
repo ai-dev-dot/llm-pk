@@ -79,8 +79,9 @@ games/xiangqi/
 │   ├── arena.ts                   # 调度器:回合仲裁、状态机、超时/重试
 │   ├── session.ts                 # 双方独立会话上下文管理(原则 C)
 │   ├── game-log.ts                # append-only JSONL 事件日志
-│   ├── replay.ts                  # 日志 → 回放事件序列
 │   └── models/anthropic.ts        # Anthropic 协议客户端(single class)
+│                              # 注:回放重建为前端纯函数(web/src/lib/replay.ts),
+│                              # 服务端只提供 GET /api/games/:id/replay 返回原始事件(见 §10)
 ├── web/                           # Vue3+Vite 前端(SVG 棋盘、思考面板、记谱、回放)
 ├── config.example.json / .env.example
 ├── logs/                          # 对局日志(.gitignore)
@@ -104,6 +105,8 @@ interface Game<State, Move> {
 ```
 
 本期**不建**真正的多游戏引擎/目录,但所有依赖(调度器、日志、回放、前端)只吃这个接口 + 文本渲染,不做象棋特判——让第二个游戏接进来时只新增一个实现文件,零改动调度骨架。
+
+> **实现注(自查后落地)**:实际线为 `server/game.ts` 的仲裁超集(在最小集之上增加 `resolve` 自由文本裁决/打回讲评、`snapshotKey` 重复局面、`moveId`/`moveKey`/`squareId` 日志编码、`clearCache`),象棋实现见 `server/games/xiangqi-game.ts`;`Arena<S,M>` 只依赖该接口,engine 纯函数被收敛在这一适配层内(公证边界)。
 
 统一坐标体系(供引擎、文本棋盘、走法列表、日志共通):
 
@@ -291,10 +294,10 @@ ArenaSession          Player(model)
   - 记谱履历(悬停显示各步思考)、回合/步数/用时;
   - 播放/暂停/单步/重开、速度、**静音开关**、结束横幅;
   - **先手标注(外审采纳)**:单局结果旁标注『单局·未换色,胜负不作模型强弱结论』,避免先手优势误导;
-- 回放:`replay.ts` 从日志重建事件序列,前端提供播放/步进/回退/时间轴拖动;回放与实时同源(实施时做"回放 vs 实时双跑 diff"测试,确保回放无重演偏差);回放链路(评审新增图):
+- 回放:服务端 `GET /api/games/:id/replay` 返回原始事件数组;**重建为前端纯函数 `web/src/lib/replay.ts`**(无状态、不触 arena 实例),提供播放/步进/回退/时间轴拖动;回放与实时同源,`useGame` 与 `lib/replay.boardAt` 共用同一 `applyMoveToPieces`(实施期已做"回放 vs 实时双跑 diff"测试,零重演偏差);回放链路(评审新增图):
 
 ```
-<gameId>.jsonl ──► replay.ts ──► 逐事件重建(无状态纯函数,不触 arena 实例)
+<gameId>.jsonl ──► GET /api/games/:id/replay ──► web/src/lib/replay.ts ──► 逐事件重建(无状态纯函数)
   append-only       ▲             ├─ 棋盘渲染(与实时同一 render)
                     │             ├─ 思考/耗时/token 成本展示
  WS 实时(seq 增量)──┘             └─ 时间轴(播放/步进/回退/拖动)

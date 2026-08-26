@@ -1,5 +1,5 @@
 import type { Board, Side, Sq } from './board';
-import { pieceAt } from './board';
+import { pieceAt, sqToIdx } from './board';
 import { legalMoves, type Move } from './moves';
 
 export type ParseResult = { ok: true; move: Move } | { ok: false; reason: string };
@@ -217,4 +217,97 @@ export function parseMove(text: string, board: Board, side: Side): ParseResult {
   const r = parseMoveRaw(text, board, side);
   if (!r.ok) return r;
   return validateMove(board, side, r.move);
+}
+
+// ---------- 中文记谱生成(参照展示) ----------
+
+const CN_DIGITS = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'] as const;
+const AR_DIGITS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
+
+const CN_CHAR: Record<string, string> = {
+  'red:rook': '車', 'red:horse': '馬', 'red:elephant': '相', 'red:advisor': '仕',
+  'red:general': '帥', 'red:cannon': '砲', 'red:pawn': '兵',
+  'black:rook': '車', 'black:horse': '馬', 'black:elephant': '象', 'black:advisor': '士',
+  'black:general': '將', 'black:cannon': '砲', 'black:pawn': '卒',
+};
+
+type GenAction = 'advance' | 'retreat' | 'lane';
+
+/** 数字 → 该方记谱字形:红用中文一~九,黑用阿拉伯 1~9。 */
+function digitOf(side: Side, n: number): string {
+  if (n < 0 || n > 9) return String(n);
+  return side === 'red' ? CN_DIGITS[n] : AR_DIGITS[n];
+}
+
+/** 列号 → 该方记谱列:红方 1..9 对应 file 8..0(右起),黑方 1..9 对应 file 0..8(左起)。 */
+function fileOfGene(side: Side, file: number): number {
+  return side === 'red' ? 9 - file : file + 1;
+}
+
+/**
+ * 由起点棋子与终点计算记谱动作与「数位」:
+ * - 直线子(车/炮/将/兵):进/退 N = 移动格数;平 N = 目标列号;
+ * - 斜行子(马/象/士):进/退 N = 目标列号(无「平」)。
+ */
+function genActionFor(
+  side: Side,
+  type: string,
+  from: Sq,
+  to: Sq,
+): { action: GenAction; n: number } {
+  const diag = type === 'horse' || type === 'elephant' || type === 'advisor';
+  const fwd = side === 'red' ? 1 : -1;
+  if (from.rank === to.rank) return { action: 'lane', n: fileOfGene(side, to.file) };
+  const advancing = (to.rank - from.rank) * fwd > 0;
+  if (diag) return { action: advancing ? 'advance' : 'retreat', n: fileOfGene(side, to.file) };
+  return { action: advancing ? 'advance' : 'retreat', n: Math.abs(to.rank - from.rank) };
+}
+
+/** 该方同型棋子在 from 所在列是否 ≥2(决定是否需要前/后 前缀)。 */
+function needFrontBack(board: Board, side: Side, type: string, file: number): boolean {
+  let count = 0;
+  for (let r = 0; r < 10; r++) {
+    const p = board[sqToIdx(file, r)];
+    if (p && p.side === side && p.type === type) {
+      count++;
+      if (count >= 2) return true;
+    }
+  }
+  return false;
+}
+
+/** 该列同型子靠前者的 rank:红方在己方视角「前」= rank 大(接近对方),黑方反之。 */
+function frontRank(side: Side, board: Board, type: string, file: number): number {
+  let f = side === 'red' ? -1 : 10;
+  const cmp = (r: number): boolean => (side === 'red' ? r > f : r < f);
+  for (let r = 0; r < 10; r++) {
+    const p = board[sqToIdx(file, r)];
+    if (p && p.side === side && p.type === type && cmp(r)) f = r;
+  }
+  return f;
+}
+
+/**
+ * 走法 → 中文记谱(红方:中文列号;黑方:阿拉伯列号;参照展示用)。
+ * 同列双(多)子需「前/后」前缀;生成侧不判合法性(历史/回放展示),调用方保证 move 合法。
+ * 例:红 砲二平五、黑 卒9进1、前車退一。
+ */
+export function moveToChinese(move: Move, board: Board, side: Side): string {
+  const from = move.from;
+  const to = move.to;
+  const p = pieceAt(board, from);
+  if (!p || p.side !== side) return '';
+  const ch = CN_CHAR[`${p.side}:${p.type}`] ?? '';
+  const colDigit = digitOf(side, fileOfGene(side, from.file));
+
+  const { action, n } = genActionFor(side, p.type, from, to);
+  const actionWord = action === 'advance' ? '进' : action === 'retreat' ? '退' : '平';
+
+  // 同列同型 ≥2 → 前/后 前缀(列号省略)
+  if (needFrontBack(board, side, p.type, from.file)) {
+    const fr = frontRank(side, board, p.type, from.file);
+    const prefix = from.rank === fr ? '前' : '后';
+    return `${prefix}${ch}${actionWord}${digitOf(side, n)}`;
+  }
+  return `${ch}${colDigit}${actionWord}${digitOf(side, n)}`;
 }
