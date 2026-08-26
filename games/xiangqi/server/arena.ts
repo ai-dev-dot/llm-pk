@@ -75,7 +75,8 @@ export class NetworkError extends Error {
 }
 
 export function isNetworkError(err: unknown): boolean {
-  if (err instanceof NetworkError) return true;
+  // F3:true 才重试——非 retryable(如 4xx 解析错误)不做指数退避,按内部错误收尾
+  if (err instanceof NetworkError) return err.retryable;
   if (err instanceof Error && (err as { isNetwork?: boolean }).isNetwork === true) return true;
   if ((err as { cause?: unknown } | null)?.cause === 'network') return true;
   return false;

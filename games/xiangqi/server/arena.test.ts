@@ -264,6 +264,34 @@ describe('Arena 网络重试', () => {
     expect(lastFinish(events)!.reason).toBe('draw-max-moves');
   });
 
+  it('NetworkError(retryable=false) 不重试,按内部错误收尾(T15 F3)', async () => {
+    let calls = 0;
+    const arena = baseArena('g-f3', {
+      networkRetryBaseDelayMs: 0,
+      red: {
+        player: {
+          side: 'red',
+          async pickMove() {
+            calls++;
+            throw new NetworkError('key 无效(400)', false);
+          },
+        },
+      },
+      black: { player: scriptPlayer('black', ['i7-i6']) },
+    });
+    const events = collect(arena);
+
+    await arena.start();
+
+    expect(calls).toBe(1); // 绝不重试
+    expect(events.filter((e): e is RetryEvent => e.type === 'retry')).toHaveLength(0);
+    const fin = lastFinish(events)!;
+    expect(fin.reason).toBe('internal-error');
+    expect(fin.winner).toBe('draw');
+    const errs = events.filter((e) => e.type === 'error');
+    expect(errs).toHaveLength(1);
+  });
+
   it('网络重试超限 → 判该方负 reason timeout(默认 3 次退避)', async () => {
     const retryCauses: string[] = [];
     const arena = baseArena('g9', {
