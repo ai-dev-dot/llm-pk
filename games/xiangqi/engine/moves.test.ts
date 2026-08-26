@@ -168,3 +168,96 @@ describe('帅/将(general)走法', () => {
     expect(moves(board2, 'e2', 'red')).not.toContain('f2');
   });
 });
+
+describe('车(rook)走法', () => {
+  it('空盘角落车:整列 9 + 整行 8 = 17 个空位', () => {
+    const board = emptyWith({ 'a1': { side: 'red', type: 'rook' } });
+    expect(moves(board, 'a1', 'red').sort()).toEqual([
+      'a2','a3','a4','a5','a6','a7','a8','a9','a10',
+      'b1','c1','d1','e1','f1','g1','h1','i1',
+    ].sort());
+  });
+  it('车遇己方子停止且不含;无法穿越', () => {
+    const board = emptyWith({ 'a1': { side: 'red', type: 'rook' }, 'a4': { side: 'red', type: 'pawn' } });
+    const hs = moves(board, 'a1', 'red');
+    expect(hs).toContain('a2');
+    expect(hs).toContain('a3');
+    expect(hs).not.toContain('a4');   // 己方挡,不可落
+    expect(hs).not.toContain('a5');   // 无法穿越
+  });
+  it('车可吃路上第一个敌子并停止;不越吃', () => {
+    const board = emptyWith({ 'a1': { side: 'red', type: 'rook' }, 'a4': { side: 'black', type: 'pawn' }, 'a6': { side: 'black', type: 'pawn' } });
+    const hs = moves(board, 'a1', 'red');
+    expect(hs).toContain('a2');
+    expect(hs).toContain('a3');
+    expect(hs).toContain('a4');       // 吃第一个敌子
+    expect(hs).not.toContain('a5');
+    expect(hs).not.toContain('a6');   // a4 挡路,不可越吃
+  });
+  it('四方向皆被己方挡时无走法', () => {
+    const board = emptyWith({
+      'd2': { side: 'red', type: 'rook' },
+      'd3': { side: 'red', type: 'pawn' }, 'c2': { side: 'red', type: 'pawn' }, 'e2': { side: 'red', type: 'pawn' },
+      'd1': { side: 'red', type: 'pawn' },
+    });
+    expect(moves(board, 'd2', 'red')).toEqual([]);
+  });
+  it('可吃敌子且到达后可再沿其余方向走', () => {
+    const board = emptyWith({ 'd4': { side: 'red', type: 'rook' }, 'd7': { side: 'black', type: 'rook' } });
+    const hs = moves(board, 'd4', 'red');
+    expect(hs).toContain('d7');  // 直线上吃
+    expect(hs).toContain('d5');
+    expect(hs).toContain('d6');
+    expect(hs).not.toContain('d8'); // d7 挡,不可越
+  });
+});
+
+describe('炮(cannon)走法', () => {
+  it('空盘角落炮:无炮架时沿直线空走(17 个空位,同车)', () => {
+    const board = emptyWith({ 'c1': { side: 'red', type: 'cannon' } });
+    expect(moves(board, 'c1', 'red').sort()).toEqual([
+      'c2','c3','c4','c5','c6','c7','c8','c9','c10',
+      'a1','b1','d1','e1','f1','g1','h1','i1',
+    ].sort());
+  });
+  it('炮不可落在炮架格;架后空位也不可落(吃子才跨架)', () => {
+    const board = emptyWith({ 'c1': { side: 'red', type: 'cannon' }, 'c4': { side: 'red', type: 'pawn' } });
+    const hs = moves(board, 'c1', 'red');
+    const cOnly = hs.filter(m => m.startsWith('c')).sort();
+    expect(cOnly).toEqual(['c2', 'c3']);       // c4 是架不可落,c4 之后无目标亦不可落
+    expect(hs).not.toContain('c4');
+  });
+  it('炮吃子需恰好一个炮架;架可为己方亦可为敌方', () => {
+    // 己方架
+    const board = emptyWith({ 'a1': { side: 'red', type: 'cannon' }, 'a4': { side: 'red', type: 'pawn' }, 'a7': { side: 'black', type: 'pawn' } });
+    expect(moves(board, 'a1', 'red')).toContain('a7');   // 隔 a4 架吃 a7
+    expect(moves(board, 'a1', 'red')).not.toContain('a4'); // 架不可落
+    // 敌方架(炮可用敌子做炮架)
+    const board2 = emptyWith({ 'a1': { side: 'red', type: 'cannon' }, 'a4': { side: 'black', type: 'pawn' }, 'a7': { side: 'black', type: 'pawn' } });
+    expect(moves(board2, 'a1', 'red')).toContain('a7');   // 隔 a4(敌架)吃 a7
+    expect(moves(board2, 'a1', 'red')).not.toContain('a4'); // a4 前无架,不可吃
+  });
+  it('无炮架时不可吃子(即使线路上有敌子)', () => {
+    const board = emptyWith({ 'a1': { side: 'red', type: 'cannon' }, 'a4': { side: 'black', type: 'pawn' } });
+    const hs = moves(board, 'a1', 'red');
+    expect(hs).not.toContain('a4');      // 无炮架,a4 不可吃
+    expect(hs.filter(m => m.startsWith('a')).sort()).toEqual(['a2', 'a3']);
+  });
+  it('两个炮架时不越第二个架吃子;目标为己方亦不吃', () => {
+    const board = emptyWith({ 'a1': { side: 'red', type: 'cannon' }, 'a4': { side: 'red', type: 'pawn' }, 'a6': { side: 'black', type: 'pawn' }, 'a8': { side: 'black', type: 'pawn' } });
+    expect(moves(board, 'a1', 'red')).toContain('a6');    // a4 为一架,架后第一子 a6(敌)可吃
+    expect(moves(board, 'a1', 'red')).not.toContain('a8'); // a8 之后还有 a6,两个炮架,不可吃
+    const board2 = emptyWith({ 'a1': { side: 'red', type: 'cannon' }, 'a4': { side: 'red', type: 'pawn' }, 'a7': { side: 'red', type: 'pawn' } });
+    expect(moves(board2, 'a1', 'red')).not.toContain('a7'); // 架后为己方,不可吃
+  });
+  it('炮吃子需炮架一只 [brief Step1 样例,经规则核验修正]', () => {
+    // c1 红炮, c4 黑卒, c6 黑卒。c1..c4 之间(c2/c3)全空 → 无炮架 → c4 不可吃;
+    // c4 恰为唯一隔子,炮隔 c4 吃 c6。
+    const board = emptyWith({
+      c1: { side: 'red', type: 'cannon' }, c4: { side: 'black', type: 'pawn' }, c6: { side: 'black', type: 'pawn' }
+    });
+    const hs = rawMovesFor(board, codeToSq('c1'), 'red');
+    expect(hs.filter(m => sqToCode(m.to) === 'c4').length).toBe(0);  // 修正:无架吃不了 c4(原铅笔期望 toBe(1) 与规则冲突)
+    expect(hs.filter(m => sqToCode(m.to) === 'c6').length).toBe(1);  // 隔 c4 架吃 c6
+  });
+});

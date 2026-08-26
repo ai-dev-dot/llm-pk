@@ -181,15 +181,61 @@ export function generalMoves(b: Board, sq: Sq, side: Side): Move[] {
   return res;
 }
 
+const ROOK_DIRS: ReadonlyArray<readonly [number, number]> = [
+  [1, 0], [-1, 0], [0, 1], [0, -1],
+];
+
+/**
+ * 车:沿横/竖四个方向直线行走。
+ * 复用 lineMoves:空格并入;遇己方停止且不含;遇敌方含吃后停止;越界停止。
+ * 无蹩腿/射程限制。结果为原始走法(送将等由后续任务过滤)。
+ */
+export function rookMoves(b: Board, sq: Sq, side: Side): Move[] {
+  return ROOK_DIRS.flatMap(([df, dr]) => lineMoves(b, sq, df, dr, side));
+}
+
+/**
+ * 炮:沿横/竖四方向直线扫描。
+ * - 遇到第一个炮架前:所有空位均为非吃走法(与 isPathClear 语义一致,但自行扫描以计炮架与目标)。
+ * - 越过第一个炮架后:其后的第一个子若为敌方则可吃(恰好一架语义);己方不可吃;
+ *   无论吃否,遇到该子后即停(不越第二个架子)。
+ * - 炮架本身不可作为落点;架后空位亦不可落。
+ */
+export function cannonMoves(b: Board, sq: Sq, side: Side): Move[] {
+  const res: Move[] = [];
+  for (const [df, dr] of ROOK_DIRS) {
+    let f = sq.file + df;
+    let r = sq.rank + dr;
+    let crossed = false;   // 是否已越过第一个炮架
+    while (inBoard(f, r)) {
+      const p = pieceAt(b, { file: f, rank: r });
+      if (!crossed) {
+        if (p === null) {
+          res.push({ from: sq, to: { file: f, rank: r } });   // 空走
+        } else {
+          crossed = true;   // 记下第一个炮架,不落此格
+        }
+      } else if (p !== null) {
+        if (p.side !== side) res.push({ from: sq, to: { file: f, rank: r } });  // 恰一架后吃敌
+        break;   // 遇到架后第一个子,无论吃否均停止
+      }
+      f += df;
+      r += dr;
+    }
+  }
+  return res;
+}
+
 export function rawMovesFor(b: Board, sq: Sq, side: Side, _threats?: unknown): Move[] {
   const p = pieceAt(b, sq);
   if (!p || p.side !== side) return [];
   switch (p.type) {
-    case 'pawn': return pawnMoves(b, sq, side);
+    case 'rook': return rookMoves(b, sq, side);
+    case 'cannon': return cannonMoves(b, sq, side);
     case 'horse': return horseMoves(b, sq, side);
     case 'elephant': return elephantMoves(b, sq, side);
     case 'advisor': return advisorMoves(b, sq, side);
     case 'general': return generalMoves(b, sq, side);
-    default: return [];   // 车/炮由后续任务实现
+    case 'pawn': return pawnMoves(b, sq, side);
   }
 }
