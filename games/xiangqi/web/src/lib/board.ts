@@ -11,6 +11,8 @@ export interface PieceRec {
   type: PieceType;
   file: number; // 0..8(列 a..i)
   rank: number; // 0..9(0=红底,9=黑顶)
+  /** 可选显式身份(id 由事件源如 useGame 维护):同名 uid 跨帧稳定,组件据此保持 DOM key(走子补间)。 */
+  uid?: string;
 }
 
 /** 组件 `pieces` prop 的两种可接受形态。 */

@@ -32,12 +32,13 @@ const files = [...Array(9).keys()];
 const ranks = [...Array(10).keys()];
 const riverY0 = PAD + 4 * CELL + 14;
 
-// 九宫斜线(red 左上、black 右上)
+// 九宫斜线(引擎坐标双侧宫):红宫位 file3..5 × rank0..2(下部),黑宫位 file3..5 × rank7..9(上部)。
+// 修正自 demo 的错误几何(demo 把两侧宫都画在顶部 file0-2/6-8),见 Task 19 brief(T18 minor)。
 const palaceLines = [
-  { x1: PAD, y1: PAD, x2: PAD + 2 * CELL, y2: PAD + 2 * CELL },
-  { x1: PAD, y1: PAD + 2 * CELL, x2: PAD + 2 * CELL, y2: PAD },
-  { x1: PAD + 6 * CELL, y1: PAD, x2: PAD + 8 * CELL, y2: PAD + 2 * CELL },
-  { x1: PAD + 6 * CELL, y1: PAD + 2 * CELL, x2: PAD + 8 * CELL, y2: PAD },
+  { palace: 'red', x1: posX(3), y1: posY(0), x2: posX(5), y2: posY(2) },
+  { palace: 'red', x1: posX(3), y1: posY(2), x2: posX(5), y2: posY(0) },
+  { palace: 'black', x1: posX(3), y1: posY(7), x2: posX(5), y2: posY(9) },
+  { palace: 'black', x1: posX(3), y1: posY(9), x2: posX(5), y2: posY(7) },
 ];
 
 /* ---------- 棋子字集(spec §4:炮统一「砲」,红黑分色) ---------- */
@@ -75,9 +76,20 @@ function assignUids(input: PieceRec[]): FlatPiece[] {
   for (const p of input) newBySq.set(sqIdx(p.file, p.rank), p);
 
   const usedOld = new Set<number>();
+  const usedKey = new Set<string>();
   const out: FlatPiece[] = [];
 
   for (const p of input) {
+    // 显式 uid(useGame 由事件维护身份):key = `x:<uid>` 跨帧确定性;同 uid 即同一 <g>,transform 补间。
+    if (p.uid) {
+      const key = `x:${p.uid}`;
+      if (!usedKey.has(key)) {
+        usedKey.add(key);
+        out.push({ ...p, uid: key });
+        continue;
+      }
+      // 同 uid 重复(异常):回退下方旧 diff,避免 key 冲突
+    }
     const sq = sqIdx(p.file, p.rank);
     const samePos = oldBySq.get(sq);
     if (samePos && samePos.side === p.side && samePos.type === p.type && !usedOld.has(sq)) {
@@ -157,8 +169,18 @@ function isLastMoveSq(p: PieceRec): boolean {
       <line v-else :x1="posX(f)" :y1="PAD" :x2="posX(f)" :y2="PAD + 9 * CELL" stroke="var(--wood-line)" stroke-width="1.3" />
     </template>
 
-    <!-- 九宫斜线 -->
-    <line v-for="(l, i) in palaceLines" :key="`pl${i}`" :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2" stroke="var(--wood-line)" stroke-width="1.3" />
+    <!-- 九宫斜线(红宫/黑宫各两条;data-palace 供测试与可访问性) -->
+    <line
+      v-for="(l, i) in palaceLines"
+      :key="`pl${i}`"
+      :x1="l.x1"
+      :y1="l.y1"
+      :x2="l.x2"
+      :y2="l.y2"
+      :data-palace="l.palace"
+      stroke="var(--wood-line)"
+      stroke-width="1.3"
+    />
 
     <!-- 楚河 / 漢界(竖排) -->
     <g class="river" fill="var(--wood-ink)" font-size="21" opacity="0.62" text-anchor="middle">
