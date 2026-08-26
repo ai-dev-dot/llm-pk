@@ -78,6 +78,23 @@ games/xiangqi/
 └── README.md
 ```
 
+### Game 接口(平台化的第一步,本期已批准)
+
+本项目定位是"LLM 对弈擂台"集合,而非单款象棋。为实现第二个游戏时不必重构,新增**最小对弈协议**,象棋作为它的第一个实现:
+
+```ts
+interface Game<State, Move> {
+  initialState: () => State;
+  legalMoves:    (s: State) => Move[];
+  render:        (s: State) => string;      // 纯文本渲染(原则 A)
+  apply:         (s: State, m: Move) => State;
+  classify:      (s: State) => MoveResult;  // ongoing/check/checkmate/stalemate/draw
+  meta:          { name: string; sides: string[]; drawRule: string };
+}
+```
+
+本期**不建**真正的多游戏引擎/目录,但所有依赖(调度器、日志、回放、前端)只吃这个接口 + 文本渲染,不做象棋特判——让第二个游戏接进来时只新增一个实现文件,零改动调度骨架。
+
 统一坐标体系(供引擎、文本棋盘、走法列表、日志共通):
 
 - **列**:观者视角从左到右 `a b c d e f g h i`;
@@ -121,10 +138,13 @@ games/xiangqi/
 
 ```jsonc
 { "seq": 12, "ts": "2026-08-26T20:11:33.120Z", "type": "move", "turn": "red",
-  "move": { "from": "g3", "to": "g6", "notation": "炮二平五" },
+  "move": { "from": "h3", "to": "e3", "notation": "炮二平五" },
   "analysis": "先手架中炮,意在直取中路……", "elapsedMs": 2314,
+  "usage": { "promptTokens": 1840, "completionTokens": 212, "costUsd": 0.0031 },
   "legal": true }
 ```
+
+`usage` 取自 Anthropic 响应的 usage 字段,展示"思考成本指标"(本期已批准),是评估模型效率的关键数据,写入日志不进入任一方上下文。
 
 - 思考内容(`analysis`)写入日志,用于复盘,但**不对对方可见**(原则 C)。
 
@@ -219,7 +239,9 @@ idle → running →(pause)⇄(resume / step)running → finished
   - 双方思考卡片:`thinking…/分析流式输出`、耗时、累计用时;
   - 记谱履历(悬停显示各步思考)、回合/步数/用时;
   - 播放/暂停/单步/重开、速度、**静音开关**、结束横幅;
-- 回放:`replay.ts` 从日志重建事件序列,前端提供播放/步进/回退/时间轴拖动;回放与实时同源。
+- 回放:`replay.ts` 从日志重建事件序列,前端提供播放/步进/回退/时间轴拖动;回放与实时同源(实施时做"回放 vs 实时双跑 diff"测试,确保回放无重演偏差);
+- **思考成本展示(本期已批准)**:UI 每步显示耗时 + token + 折算成本($US),顶部汇总本局总计,供评估比较;
+- **赛后 AI 复盘摘要(本期已批准)**:`POST /api/games/:id/review` 或自动在对局终局后异步生成——由专用审查模型(可配,可能与对局模型无关)阅读公共日志(含各步已披露的 analysis,不含任何私有上下文),输出关键转变/失误要点;结果作为 `review` 事件追加进日志与展示;摘要生成失败不影响对局,**绝不**回写对弈上下文(原则 C)。
 
 ## 11. 错误处理与鲁棒性
 
@@ -245,4 +267,14 @@ npm run dev      # 后端 + Vite 前端;打开 localhost:5173
 
 ## 14. 里程碑
 
-1. 引擎(规则+判定)+ 单测 → 2. 会话/日志/调度器 + 集成测试 → 3. Anthropic 棋手适配器(文本化提示词)→ 4. REST/WS 服务 → 5. Vue 前端(沿用 demo 视觉)→ 6. 端到端联调 + 真实对局验收。
+1. 引擎(规则+判定)+ 单测 → 2. Game 接口封装 + 会话/日志/调度器 + 集成测试 → 3. Anthropic 棋手适配器(文本化提示词 + usage 采集)→ 4. REST/WS 服务 → 5. Vue 前端(沿用 demo 视觉,含思考成本展示)→ 6. 赛后 AI 复盘摘要(独立审查模型)→ 7. 端到端联调 + 真实对局验收。
+
+## 15. 本期外(TODOS)
+
+由 CEO 评审记录,未进本期:
+
+- 批量对局匹配(同配置赛 N 局并汇总胜率);
+- 对局分享链接(每局唯一 URL);
+- 一键复跑(固定随机种子/同配置确定性重跑)。
+
+以上入 `TODOS.md` 台账,实施计划不包含,避免范围蔓延。
