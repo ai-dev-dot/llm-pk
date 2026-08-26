@@ -1,0 +1,16 @@
+{
+  "name": "llm-pk-xiangqi",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "tsx watch server/main.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5",
+    "vitest": "^3",
+    "tsx": "^4"
+  }
+}
