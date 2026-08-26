@@ -8,6 +8,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import XQBoard from './XQBoard.vue';
 import ThoughtPanel from './ThoughtPanel.vue';
+import ReviewPanel from './ReviewPanel.vue';
 import GameControls from './GameControls.vue';
 import { useGame, type NewGameConfig } from '../composables/useGame';
 import type { MoveRecord } from '../composables/useGame';
@@ -130,6 +131,8 @@ function moveLine(m: MoveRecord): string {
           :completion-tokens="game.costSummary.red.completionTokens"
           :cost-usd="game.costSummary.red.costUsd"
           :rejections="game.rejectCount.red"
+          :violations="game.result?.ruleViolations.red"
+          :finished="game.phase === 'finished'"
         />
         <ThoughtPanel
           side="black"
@@ -142,6 +145,8 @@ function moveLine(m: MoveRecord): string {
           :completion-tokens="game.costSummary.black.completionTokens"
           :cost-usd="game.costSummary.black.costUsd"
           :rejections="game.rejectCount.black"
+          :violations="game.result?.ruleViolations.black"
+          :finished="game.phase === 'finished'"
         />
 
         <div class="log-wrap">
@@ -164,6 +169,8 @@ function moveLine(m: MoveRecord): string {
             </li>
           </ul>
         </div>
+
+        <ReviewPanel :review="game.review" :game-over="game.phase === 'finished'" />
       </aside>
     </main>
 

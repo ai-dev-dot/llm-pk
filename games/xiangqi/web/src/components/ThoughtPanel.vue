@@ -22,8 +22,12 @@ const props = withDefaults(
     completionTokens: number;
     costUsd: number;
     rejections: number;
+    /** 规则失误分阶段计数(finish 携带;T20):教学前 = 首次被打回前累计,教学后 = 被拒后重犯。 */
+    violations?: { pre: number; post: number; total?: number } | null;
+    /** 对局是否已终局(finish 到达;T20):状态区改为「已终局」标注。 */
+    finished?: boolean;
   }>(),
-  { model: undefined },
+  { model: undefined, violations: null, finished: false },
 );
 
 const totalTokens = computed(() => props.promptTokens + props.completionTokens);
@@ -40,7 +44,8 @@ const glyph = computed(() => (props.side === 'red' ? '帥' : '將'));
     </div>
 
     <div class="p-state">
-      <template v-if="active">
+      <template v-if="finished">已终局</template>
+      <template v-else-if="active">
         思考中…<span class="caret" aria-hidden="true"></span>
       </template>
       <template v-else-if="rejections > 0">已遭裁判打回 · 等待对手</template>
@@ -61,6 +66,9 @@ const glyph = computed(() => (props.side === 'red' ? '帥' : '將'));
       </span>
       <span class="m-cell" title="累计思考成本">
         <span class="m-label">成本</span>{{ fmtUsd(costUsd) }}
+      </span>
+      <span v-if="violations && violations.pre + violations.post > 0" class="viol" data-testid="viol-badge" title="规则失误分阶段:教学前=首次被打回前累计;教学后=被拒后重犯">
+        教学前 ×{{ violations.pre }} · 教学后 ×{{ violations.post }}
       </span>
       <span v-if="rejections > 0" class="rej">裁判打回 ×{{ rejections }}</span>
     </div>
@@ -211,6 +219,15 @@ const glyph = computed(() => (props.side === 'red' ? '帥' : '將'));
   padding: 2px 7px;
   border-radius: 8px;
   font-family: var(--font-body);
+}
+.viol {
+  color: #b0563a;
+  border: 1px solid rgba(200, 66, 44, 0.45);
+  background: rgba(200, 66, 44, 0.07);
+  padding: 2px 7px;
+  border-radius: 8px;
+  font-family: var(--font-body);
+  font-size: 11px;
 }
 @media (prefers-reduced-motion: reduce) {
   .p-card.busy::before,

@@ -49,4 +49,19 @@ describe('ThoughtPanel', () => {
     expect(w.text()).toContain('1200');
     expect(w.text()).toContain('$0.0031');
   });
+
+  it('violations 徽标:教学前/教学后 分显示(T20);总和为 0 不显示', () => {
+    const w = mountCard({ violations: { pre: 2, post: 1 } });
+    expect(w.get('[data-testid="viol-badge"]').text()).toContain('教学前 ×2');
+    expect(w.get('[data-testid="viol-badge"]').text()).toContain('教学后 ×1');
+
+    const w0 = mountCard({ violations: { pre: 0, post: 0 } });
+    expect(w0.find('[data-testid="viol-badge"]').exists()).toBe(false);
+  });
+
+  it('finished 标注:显示「已终局」,不再显示待机', () => {
+    const w = mountCard({ finished: true });
+    expect(w.text()).toContain('已终局');
+    expect(w.text()).not.toContain('待机');
+  });
 });

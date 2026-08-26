@@ -103,3 +103,43 @@ describe('App 全流程冒烟', () => {
     w.unmount();
   });
 });
+
+describe('App 回放导航', () => {
+  it('对局页点「回放」→ Replay 视图挂载并读 replay API;退出回放回表单', async () => {
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        calls.push(u);
+        if (u.endsWith('/replay')) return new Response(JSON.stringify({ id: 'g-smoke', events: [] }), { status: 200 });
+        if (u === '/api/games') return new Response(JSON.stringify({ id: 'g-smoke' }), { status: 201 });
+        return new Response(JSON.stringify({ id: 'g-smoke', status: 'paused', moveCount: 1 }), { status: 200 });
+      }),
+    );
+
+    const w = mount(App);
+    const red = w.get('fieldset[data-side="red"]');
+    const black = w.get('fieldset[data-side="black"]');
+    for (const fs of [red, black]) {
+      fs.find('input[placeholder*="sk-"]').setValue('k');
+      fs.find('input[placeholder*="claude"]').setValue('m');
+      fs.find('input[placeholder*="api.anthropic"]').setValue('https://api.anthropic.com/v1');
+    }
+    await w.get('form').trigger('submit');
+    await flushPromises();
+    expect(w.find('[data-testid="controls"]').exists()).toBe(true);
+
+    await w.get('[data-testid="replay-nav"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="replay-view"]').exists()).toBe(true);
+    expect(calls).toContain('/api/games/g-smoke/replay');
+
+    await w.get('[data-testid="replay-exit"]').trigger('click');
+    await flushPromises();
+    expect(w.find('form[data-testid="new-game-form"]').exists()).toBe(true);
+
+    w.unmount();
+  });
+});

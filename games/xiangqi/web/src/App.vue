@@ -7,9 +7,13 @@
 import { ref } from 'vue';
 import NewGameForm from './components/NewGameForm.vue';
 import GameView from './components/GameView.vue';
+import Replay from './views/Replay.vue';
 import { createGame, type NewGameConfig } from './composables/useGame';
 
-type Route = { kind: 'form' } | { kind: 'game'; id: string; config: NewGameConfig };
+type Route =
+  | { kind: 'form' }
+  | { kind: 'game'; id: string; config: NewGameConfig }
+  | { kind: 'replay'; id: string };
 
 const route = ref<Route>({ kind: 'form' });
 const submitting = ref(false);
@@ -44,7 +48,12 @@ function restartWithConfig(cfg: NewGameConfig): void {
       </div>
       <div v-if="route.kind === 'game'" class="hdr-right">
         <span class="status-pill"><span class="beam"></span>{{ route.id.slice(0, 8) }}</span>
+        <button class="btn" data-testid="replay-nav" @click="route = { kind: 'replay', id: route.id }">回放</button>
         <button class="btn" data-testid="new-game" @click="route = { kind: 'form' }">新局</button>
+      </div>
+      <div v-else-if="route.kind === 'replay'" class="hdr-right">
+        <span class="status-pill"><span class="beam"></span>{{ route.id.slice(0, 8) }}</span>
+        <button class="btn" data-testid="replay-exit" @click="route = { kind: 'form' }">退出回放</button>
       </div>
     </header>
 
@@ -53,6 +62,13 @@ function restartWithConfig(cfg: NewGameConfig): void {
       :submitting="submitting"
       :error="formError"
       @submit="launch"
+    />
+
+    <Replay
+      v-else-if="route.kind === 'replay'"
+      :key="`r-${route.id}`"
+      :game-id="route.id"
+      @exit="route = { kind: 'form' }"
     />
 
     <GameView

@@ -1,8 +1,8 @@
 import { reactive } from 'vue';
 import { codeToSq, type Side, type Sq } from '../../../engine/types';
-import { initialBoard } from '../../../engine/board';
-import type { GameEvent, Usage } from '../../../server/game-log';
-import { recordsFromBoard, type PieceRec } from '../lib/board';
+import type { GameEvent, Usage, ReviewEvent } from '../../../server/game-log';
+// 回放/实时共用同一条走子重放代码路径(与 Replay 的 boardAt 同源)。
+import { applyMoveToPieces, initialPiecesWithUid, isOnBoard, type UidPiece } from '../lib/replay';
 
 //
 // useGame —— 单局实时数据源(Task 19)。
@@ -16,7 +16,7 @@ import { recordsFromBoard, type PieceRec } from '../lib/board';
 //   * `move`  → 重放棋盘(事件 move.from/to 应用到当前 board,棋子带**显式 uid**——走子同 key、吃子移除);
 //   * `finish`→ phase=finished + 结果横幅数据;
 //   * `illegal-attempt` → UI「裁判打回」计数与原因留档;
-//   * `usage`(move/review 携带)→ 按方累计成本/token/耗时;
+//   * `usage`:move → 按方累计 + 总计;review → 复盘无行棋方,只入总计(T20);
 //   * `player-message(thought)` → 累积流式思考文本。
 // - 按键 pause/resume/step 发 REST;`controls.destroy()` 于组件卸载时断开。
 //
@@ -28,9 +28,7 @@ import { recordsFromBoard, type PieceRec } from '../lib/board';
 export type GamePhase = 'connecting' | 'running' | 'paused' | 'finished' | 'error';
 export type WsStatus = 'connecting' | 'open' | 'closed';
 
-export interface UidPiece extends PieceRec {
-  uid: string;
-}
+export type { UidPiece } from '../lib/replay';
 
 export interface MoveRecord {
   seq: number;
@@ -127,9 +125,6 @@ const num = (v: unknown): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const isOnBoard = (s: Sq): boolean =>
-  Number.isInteger(s.file) && Number.isInteger(s.rank) && s.file >= 0 && s.file < 9 && s.rank >= 0 && s.rank < 10;
-
 async function readError(res: Response): Promise<string> {
   try {
     const b = (await res.json()) as { error?: { hint?: string; message?: string } };
@@ -155,14 +150,6 @@ export async function createGame(config: NewGameConfig, fetcher: typeof fetch = 
   if (!res.ok) throw new Error(await readError(res));
   return (await res.json()) as { id: string };
 }
-
-/* ---------- 初始局面(显式 uid,确定性) ---------- */
-
-function initialPiecesWithUid(): UidPiece[] {
-  return recordsFromBoard(initialBoard()).map((p, i) => ({ ...p, uid: `${p.side}:${p.type}:${i}` }));
-}
-
-const findAt = (list: UidPiece[], sq: Sq): number => list.findIndex((p) => p.file === sq.file && p.rank === sq.rank);
 
 /* ---------- useGame ---------- */
 
@@ -194,6 +181,7 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     checkSeq: 0,
     checkSide: null as Side | null,
     result: null as ResultInfo | null,
+    review: null as ReviewEvent | null,
     error: null as string | null,
     costSummary: { red: zeroCost(), black: zeroCost(), total: zeroCost() } as CostSummary,
   });
@@ -207,19 +195,8 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
   /* ---------- 事件 → 棋盘/UI 状态机 ---------- */
 
   function applyMove(from: Sq, to: Sq): void {
-    const list = state.board.slice();
-    const fromIdx = findAt(list, from);
-    if (fromIdx < 0) {
-      // 数据异常:起点未定位到子(极端/被篡改帧)→ 兜底新建,避免画板缺子
-      list.push({ side: state.turn, type: 'pawn', file: to.file, rank: to.rank, uid: `evt:${state.lastSeq}` });
-      state.board = list;
-      return;
-    }
-    const mover = list.splice(fromIdx, 1)[0]!;
-    const toIdx = findAt(list, to);
-    if (toIdx >= 0) list.splice(toIdx, 1); // 吃子
-    list.push({ ...mover, file: to.file, rank: to.rank });
-    state.board = list;
+    // 与回放 boardAt 共用同一实现(见 lib/replay.ts),实时/回放零重演偏差。
+    state.board = applyMoveToPieces(state.board, from, to, state.lastSeq, state.turn);
   }
 
   function refreshThinking(): void {
@@ -290,6 +267,18 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
       case 'timeout':
       case 'draw':
         break; // 板面已由 move 更新;其余为信息性事件
+      case 'review': {
+        // 赛后复盘摘要(T20):入 state.review;usage 无行棋方,只归 total 成本账。
+        state.review = e;
+        if (e.usage) {
+          const total = state.costSummary.total;
+          total.promptTokens += num(e.usage.promptTokens);
+          total.completionTokens += num(e.usage.completionTokens);
+          total.costUsd += num(e.usage.costUsd);
+          if (typeof e.elapsedMs === 'number' && Number.isFinite(e.elapsedMs)) total.elapsedMs += e.elapsedMs;
+        }
+        break;
+      }
       case 'finish': {
         const rv = e.ruleViolations;
         state.phase = 'finished';
@@ -339,6 +328,7 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     ws = socket;
     socket.onopen = () => {
       state.wsStatus = 'open';
+      reconnectAttempt = 0; // 连上即归零退避计数(T20 forward [Info-3])
     };
     socket.onmessage = (ev) => {
       if (ev == null || ev.data == null) return;
@@ -423,6 +413,7 @@ export interface UseGameState {
   checkSeq: number;
   checkSide: Side | null;
   result: ResultInfo | null;
+  review: ReviewEvent | null;
   error: string | null;
   costSummary: CostSummary;
   controls: GameControls;

@@ -22,7 +22,11 @@ export function fmtRound(halfMoves: number): number {
   return Math.ceil(Math.max(halfMoves, 0) / 2);
 }
 
-/** 终局原因 → 中文横幅副标题。 */
+/**
+ * 终局原因 → 中文横幅副标题。
+ * 键对齐 server finish.reason(原始引擎/守卫码):checkmate/stalemate/illegal-moves/timeout/
+ * internal-error/draw-aborted/draw-repeat/draw-no-mating-material/draw-max-moves/draw-cost-limit。
+ */
 export function fmtReason(reason: string): string {
   const map: Record<string, string> = {
     checkmate: '絕殺',
@@ -30,11 +34,11 @@ export function fmtReason(reason: string): string {
     'illegal-moves': '打回超限判负',
     timeout: '网络超时判负',
     'internal-error': '对局异常终止',
-    repeat: '重复局面 · 和棋',
-    'no-fighting-material': '双方无进攻子力 · 和棋',
-    'max-moves': '步数上限 · 和棋',
-    'draw-cost-limit': '成本上限 · 和棋',
     'draw-aborted': '强制中止',
+    'draw-repeat': '重复局面 · 和棋',
+    'draw-no-mating-material': '双方无进攻子力 · 和棋',
+    'draw-max-moves': '步数上限 · 和棋',
+    'draw-cost-limit': '成本上限 · 和棋',
   };
   return map[reason] ?? reason;
 }

@@ -234,6 +234,40 @@ describe('useGame move 推进', () => {
     expect(g.moves).toHaveLength(1);
     g.controls.destroy();
   });
+it('review 事件入 state.review;usage 只归 total,不分方(T20)', () => {
+    const { factory, sockets } = makeFactory();
+    const g = useGame('g1', { wsFactory: factory });
+    sockets[0]!.onmessage({ data: frame(1, beginEv()) });
+    sockets[0]!.onmessage({
+      data: frame(2, { seq: 2, ts: 't', type: 'review', summary: '红方中局抓住机会', keyPoints: ['中炮'], model: 'cm', elapsedMs: 3000, usage: { promptTokens: 600, completionTokens: 90, costUsd: 0.0024 } }),
+    });
+    expect(g.review?.summary).toBe('红方中局抓住机会');
+    expect(g.review?.keyPoints).toEqual(['中炮']);
+    expect(g.costSummary.total.costUsd).toBeCloseTo(0.0024, 6);
+    expect(g.costSummary.total.elapsedMs).toBe(3000);
+    expect(g.costSummary.red.costUsd).toBe(0);
+    expect(g.costSummary.black.costUsd).toBe(0);
+    g.controls.destroy();
+  });
+
+  it('重连成功后退避计数归零:连续两次断线重连,delay() 均从 attempt=0 起(T20)', async () => {
+    vi.useFakeTimers();
+    const attempts: number[] = [];
+    const { factory, sockets } = makeFactory();
+    const g = useGame('g1', { wsFactory: factory, reconnectDelayMs: (a) => { attempts.push(a); return 1; } });
+
+    sockets[0]!.onopen(null); // 首次连上 → 归零
+    sockets[0]!.close(); // 断线 → delay(0)
+    await vi.runAllTimersAsync(); // 重连 #2
+    expect(factory).toHaveBeenCalledTimes(2);
+
+    sockets[1]!.onopen(null); // 二次连上 → 再次归零
+    sockets[1]!.close(); // 再断 → 仍应从 0 起
+    expect(attempts).toEqual([0, 0]); // 无归零时第二次会是 1
+
+    g.controls.destroy();
+    vi.useRealTimers();
+  });
 });
 
 /* ---------- 断线重连 since 续传 ---------- */
