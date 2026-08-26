@@ -292,6 +292,7 @@
       <button class="btn pri" id="playBtn">❚❚ 暂停</button>
       <button class="btn" id="stepBtn">⏭ 单步<span class="kbd">S</span></button>
       <button class="btn" id="resetBtn">↺ 重开</button>
+      <button class="btn" id="soundBtn" title="开关音效">🔊</button>
     </div>
     <div class="seg" id="speedSeg">
       <button data-s="1" class="on">1×</button>
@@ -441,6 +442,61 @@
     "双车环环相扣,步步紧逼,绝杀已成定局。",
   ];
 
+  /* ================= 音效(Web Audio,零文件) ================= */
+  let actx = null, muted = false;
+  function ensureAudio(){
+    if (!actx && window.AudioContext) actx = new AudioContext();
+    if (actx && actx.state === "suspended") actx.resume();
+    return actx;
+  }
+  function tone({ t, f0, f1, dur, vol, type }){
+    const a = ensureAudio(); if (!a || muted) return;
+    const osc = a.createOscillator(), g = a.createGain();
+    osc.type = type || "triangle";
+    osc.frequency.setValueAtTime(f0, t);
+    osc.frequency.exponentialRampToValueAtTime(f1 || f0, t + dur);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g); g.connect(a.destination); osc.start(t); osc.stop(t + dur + 0.03);
+  }
+  function noiseHit({ t, dur, vol, freq }){
+    const a = ensureAudio(); if (!a || muted) return;
+    const len = Math.max(1, (a.sampleRate * dur) | 0);
+    const buf = a.createBuffer(1, len, a.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1) * Math.pow(1 - i/len, 2);
+    const src = a.createBufferSource(); src.buffer = buf;
+    const f = a.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = freq || 900;
+    const g = a.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); g.connect(a.destination);
+    src.start(t); src.stop(t + dur + 0.03);
+  }
+  const playSound = {
+    now(){ const a = ensureAudio(); return a ? a.currentTime : 0; },
+    click(){ const t = this.now(); tone({ t, f0:840, f1:620, dur:.05, vol:.06, type:"sine" }); },
+    move(){ const t = this.now();
+      noiseHit({ t, dur:.09, vol:.26, freq:1500 });
+      tone({ t:t+0.006, f0:195, f1:70, dur:.13, vol:.2 });
+    },
+    capture(){ const t = this.now();
+      noiseHit({ t, dur:.16, vol:.4, freq:900 });
+      tone({ t:t+0.01, f0:155, f1:50, dur:.2, vol:.26 });
+      tone({ t, f0:330, f1:120, dur:.12, vol:.12, type:"sine" });
+    },
+    check(){ const t = this.now();
+      tone({ t, f0:523, f1:523, dur:.2, vol:.16 });
+      tone({ t, f0:659, f1:659, dur:.2, vol:.1, type:"sine" });
+      tone({ t:.13, f0:784, f1:659, dur:.24, vol:.13 });
+    },
+    win(){ const t = this.now();
+      [523, 659, 784, 1047].forEach((f, i) => tone({ t: t + i*.15, f0:f, f1:f, dur:.42, vol:.12 }));
+    },
+  };
+  document.addEventListener("pointerdown", () => { ensureAudio(); });
+
   /* ================= 交互状态 ================= */
   const state = { i:0, playing:true, speed:1 };
   const $ = id => document.getElementById(id);
@@ -484,6 +540,10 @@
     movePiece(from, m.to);
     stampAt(m.to[0], m.to[1]);
     lastDotAt(m.to[0], m.to[1]);
+    if (m.final) playSound.win();
+    else if (m.check) playSound.check();
+    else if (m.cap) playSound.capture();
+    else playSound.move();
     if (m.check){ $("checkBadge").classList.add("show"); later(()=>{ $("checkBadge").classList.remove("show"); }, 950); }
   }
 
@@ -596,7 +656,15 @@
     nextHalf();
   }
 
+  $("soundBtn").addEventListener("click", () => {
+    muted = !muted;
+    $("soundBtn").textContent = muted ? "🔇" : "🔊";
+    $("soundBtn").title = muted ? "开启音效" : "关闭音效";
+    if (!muted) playSound.click();
+  });
+
   $("playBtn").addEventListener("click", () => {
+    playSound.click();
     state.playing = !state.playing;
     $("playBtn").textContent = state.playing ? "❚❚ 暂停" : "▶ 继续";
     if (state.playing && state.i < MOVES.length) {
@@ -607,6 +675,7 @@
   });
 
   $("stepBtn").addEventListener("click", () => {
+    playSound.click();
     if (state.playing){ state.playing = false; $("playBtn").textContent = "▶ 继续"; }
     clearTimers();
     setThinking(MOVES[state.i].side);   // placeholder
@@ -621,8 +690,8 @@
     if (m.final){ endGame(m); return; }
   });
 
-  $("resetBtn").addEventListener("click", reset);
-  $("replayBtn").addEventListener("click", reset);
+  $("resetBtn").addEventListener("click", () => { playSound.click(); reset(); });
+  $("replayBtn").addEventListener("click", () => { playSound.click(); reset(); });
   document.querySelectorAll("#speedSeg button").forEach(b => {
     b.addEventListener("click", () => {
       document.querySelectorAll("#speedSeg button").forEach(x=>x.classList.remove("on"));
