@@ -41,6 +41,8 @@ export interface AnthropicPlayerConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** 自定义 system 提示(如 config 里 `red.systemPrompt`);缺省用同一模板 buildSystemPrompt(side)。 */
+  systemPrompt?: string;
   /** 单次请求超时(ms),默认 120000。超时抛 `NetworkError(retryable=true)`。 */
   timeoutMs?: number;
   /**
@@ -155,6 +157,7 @@ export class AnthropicPlayer implements Player {
   private readonly timeoutMs: number;
   private readonly maxTokens: number;
   private readonly tokensPerM: TokensPerM;
+  private readonly systemPrompt?: string;
   /** 构造契约占位(透传 arena),player 层不自行重试。 */
   public readonly networkRetryBaseDelayMs?: number;
 
@@ -167,11 +170,13 @@ export class AnthropicPlayer implements Player {
     this.maxTokens = cfg.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.tokensPerM = cfg.tokensPerM ?? DEFAULT_TOKENS_PER_M;
     this.networkRetryBaseDelayMs = cfg.networkRetryBaseDelayMs;
+    this.systemPrompt = cfg.systemPrompt;
   }
 
   async pickMove(ctx: MoveContext): Promise<MoveChoice> {
     const started = Date.now();
-    const system = buildSystemPrompt(this.side); // 同一模板,仅红/黑、执先/执后差异
+    // 自定义 systemPrompt 优先(arena config 传入可令其生效),缺省回落同一模板。
+    const system = this.systemPrompt ?? buildSystemPrompt(this.side);
     const user = buildUserPrompt(ctx);
     const body = {
       model: this.model,
@@ -206,7 +211,13 @@ export class AnthropicPlayer implements Player {
       clearTimeout(timer);
     }
 
-    const text = await res.text();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (err) {
+      // 响应体读取失败(如连接被对端重置)→ 网络型错误,交 arena 指数退避重试。
+      throw new NetworkError(`读响应体失败: ${err instanceof Error ? err.message : String(err)}`, true);
+    }
     let json: unknown = null;
     try {
       json = text ? (JSON.parse(text) as unknown) : null;

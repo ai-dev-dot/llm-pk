@@ -112,6 +112,21 @@ describe('AnthropicPlayer 基本调用', () => {
     expect(user).toContain('卒7进1');
   });
 
+  it('systemPrompt 可配:提供时完全替换模板(config.red.systemPrompt 生效链路)', async () => {
+    const fn = stubFetch(toolUseResponse());
+    const p = new AnthropicPlayer({
+      side: 'red',
+      baseUrl: 'http://x',
+      apiKey: 'k',
+      model: 'm',
+      systemPrompt: '你是测试专用棋手,只走兵。',
+    });
+    await p.pickMove(fakeCtx);
+    const body = requestOf(fn).body;
+    expect(body.system).toContain('测试专用棋手');
+    expect(body.system).not.toContain('炮:直线行走'); // 模板被整体覆盖
+  });
+
   it('黑方仅「黑方/后行」文本差异,其余模板一致', async () => {
     const fn = stubFetch(toolUseResponse());
     const p = new AnthropicPlayer({ side: 'black', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
@@ -275,5 +290,21 @@ describe('网络错误', () => {
     stubFetch(new Response(JSON.stringify({ error: { message: 'rate limited' } }), { status: 429 }));
     const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
     await expect(p.pickMove(fakeCtx)).rejects.toMatchObject({ name: 'NetworkError', retryable: true });
+  });
+
+  it('res.text() 读响应体失败 → NetworkError(retryable=true)', async () => {
+    const failBody = {
+      status: 200,
+      text: async (): Promise<string> => {
+        throw new TypeError('socket hang up');
+      },
+      json: async (): Promise<unknown> => null,
+    } as unknown as Response;
+    vi.stubGlobal('fetch', vi.fn(async () => failBody));
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    const err = await p.pickMove(fakeCtx).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NetworkError);
+    expect((err as NetworkError & { retryable?: boolean }).retryable).toBe(true);
+    expect((err as Error).message).toMatch(/读响应体失败/);
   });
 });

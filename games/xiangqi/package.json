@@ -9,9 +9,17 @@
     "dev": "tsx watch server/main.ts"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^22",
+    "@types/supertest": "^7.2.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4",
     "typescript": "^5",
-    "vitest": "^3",
-    "tsx": "^4"
+    "vitest": "^3"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "supertest": "^7.2.2",
+    "ws": "^8.21.3"
   }
 }
