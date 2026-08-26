@@ -327,6 +327,7 @@ export class Arena {
       const verdict = classifyAll(
         { board: this.board, turn: nextSide, halfMoves: this.halfMoves_, moveCount: this.moveCount_, history: this.history },
         this.cfg.rules?.maxTotalMoves ?? DEFAULT_MAX_TOTAL_MOVES,
+        this.cfg.rules?.drawRepeat ?? 3, // B3:drawRepeat 接线(与 begin.rules.drawRepeat 同源生效)
       );
       if (verdict.type === 'check') this.emit({ type: 'check', side: nextSide });
 

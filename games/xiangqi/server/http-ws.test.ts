@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
 import request from 'supertest';
-import { createXiangqiServer, type GameRecord } from './http';
+import { createXiangqiServer, type GameRecord, type ResolvedSide, type ServerDefaults } from './http';
 import type { Player, MoveChoice } from './arena';
 import type { ReviewClient, ReviewPayload } from './review';
 import type { GameEvent, ReviewEvent } from './game-log';
@@ -99,14 +99,16 @@ interface TestServer {
 
 /** 起一个真实可用的 http 服务(port 0),WS 与 REST 共用。 */
 async function startServer(
-  buildPlayer?: (side: Side) => Player,
+  buildPlayer?: (side: Side, cfg?: ResolvedSide) => Player,
   reviewClient?: ReviewClient,
+  config?: ServerDefaults,
 ): Promise<TestServer> {
   const logDir = await mkdtemp(join(tmpdir(), 'xiangqi-http-ws-'));
   const srv = createXiangqiServer({
     logDir,
-    buildPlayer: buildPlayer ? (side) => buildPlayer(side) : undefined,
+    buildPlayer: buildPlayer ? (side, cfg) => buildPlayer(side, cfg) : undefined,
     reviewClient,
+    config,
   });
   srv.server.listen(0);
   await new Promise<void>((res) => srv.server.once('listening', () => res()));
@@ -276,6 +278,89 @@ describe('REST 建局与查询', () => {
       // 不存在 → 404
       const notFound = await request(srv.server).get('/api/games/ghost');
       expect(notFound.status).toBe(404);
+    } finally {
+      await srv.dispose();
+    }
+  });
+});
+
+/* ---------- B1 安全 / L5 规则参数校验 ---------- */
+
+describe('B1 密钥外带向量与 L5 规则参数', () => {
+  it('body 未给 apiKey 且 baseUrl ≠ config.base_url → 400,绝不回落 config key 构造任何 player', async () => {
+    const seen: Array<{ side: Side; baseUrl?: string; apiKey?: string }> = [];
+    const cfg: ServerDefaults = {
+      base_url: 'https://cfg.anthropic.com',
+      api_key: 'sk-config-key',
+      red: { model: 'm-cfg' },
+      black: { model: 'm-cfg' },
+    };
+    const srv = await startServer(
+      (side, sideCfg) => {
+        seen.push({ side, baseUrl: sideCfg?.baseUrl, apiKey: sideCfg?.apiKey });
+        const p = scriptPlayer(side, ['a4-a5', 'i7-i6']);
+        return p;
+      },
+      undefined,
+      cfg,
+    );
+    try {
+      // 不传 key + 指定非 config baseUrl → 400 VALIDATION_ERROR(该侧 key 视为缺失)
+      const bad = await request(srv.server).post('/api/games').send({
+        red: { baseUrl: 'http://evil.local:9999', model: 'm' },
+        black: { baseUrl: 'http://evil.local:9999', model: 'm' },
+      });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error.code).toBe('VALIDATION_ERROR');
+      expect(JSON.stringify(bad.body)).not.toContain('sk-config-key');
+      expect(seen).toHaveLength(0); // 未构造任何 player → 配置 key 绝不外发
+
+      // baseUrl 与 config 一致且不传 key → 回落 config key,正常建局
+      const ok = await request(srv.server).post('/api/games').send({
+        red: { model: 'm' },
+        black: { model: 'm' },
+      });
+      expect(ok.status).toBe(201);
+      await waitFor(() => seen.length === 2);
+      expect(seen.every((s) => s.apiKey === 'sk-config-key')).toBe(true);
+      expect(seen.every((s) => s.baseUrl === 'https://cfg.anthropic.com')).toBe(true);
+      expect(JSON.stringify(ok.body)).not.toContain('sk-config-key');
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('L5:非法规则值(illegalAttemptsLimit:0)→ 400 VALIDATION_ERROR 而非 500', async () => {
+    const srv = await startServer();
+    try {
+      const res = await request(srv.server).post('/api/games').send(baseBody({ config: { illegalAttemptsLimit: 0 } }));
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('B4:请求级 config.timeoutMs 透传 per-side player,且 begin.rules.timeoutMs 反映真实值(不再硬报 120000)', async () => {
+    const seen: Array<{ side: Side; timeoutMs?: number }> = [];
+    const srv = await startServer(
+      (side, sideCfg) => {
+        seen.push({ side, timeoutMs: sideCfg?.timeoutMs });
+        return scriptPlayer(side, ['a4-a5', 'i7-i6']);
+      },
+      undefined,
+      { red: { model: 'm-cfg' }, black: { model: 'm-cfg' } },
+    );
+    try {
+      const { id } = await createGame(srv.server, baseBody({ config: { timeoutMs: 5000, maxTotalMoves: 2 } }));
+      expect(seen).toHaveLength(2);
+      expect(seen.every((s) => s.timeoutMs === 5000)).toBe(true);
+      const arena = srv.registry.get(id)!;
+      await waitFor(() => arena.state === 'finished');
+      const begin = srv.store.get(id)!.events.find((e: GameEvent) => e.type === 'begin');
+      expect((begin as { rules?: { timeoutMs?: number } }).rules?.timeoutMs).toBe(5000);
+      const fin = srv.store.get(id)!.events.find((e: GameEvent) => e.type === 'finish');
+      expect(fin).toMatchObject({ winner: 'draw', reason: 'draw-max-moves' });
     } finally {
       await srv.dispose();
     }

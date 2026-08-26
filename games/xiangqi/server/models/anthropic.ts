@@ -10,7 +10,8 @@
 // - 隔离(原则 C):只读 `ctx.selfThoughts`(己方)与公共 `history`,绝不自行拼装对方 analysis;
 // - 回显(原则 D):绝不把 legalMoves 清单写进任何 user 消息;rejection 只带中文讲评原因;
 // - 网络错误:传输失败 / 超时(AbortController @ timeoutMs)/ 5xx / 429 → `NetworkError(retryable=true)`;
-//   其余 4xx(如密钥失效、schema 违例)→ `retryable=false`(arena 判 `isNetworkError` 后不再退避)。
+//   其余 4xx(如密钥失效)→ `retryable=false`(arena 判 `isNetworkError` 后不再退避);
+//   B2:200 但缺 tool_use / 缺 content / 工具参数缺失 → 返回空 move,交 arena 打回循环(PARSER_INVALID)。
 //
 // 用原生 fetch(node 18+),不引入 SDK;`baseUrl` 可指向任意 Anthropic 协议端点(`/v1/messages`)。
 //
@@ -243,14 +244,16 @@ export class AnthropicPlayer implements Player {
   }
 }
 
-/** 从响应提取 tool_use 的 {analysis, move};缺失即确定性协议错误(非重试)。 */
+/**
+ * 从响应提取 tool_use 的 {analysis, move}。
+ * B2:响应缺 tool_use / 缺 content / 工具参数缺失 → **不**抛 NetworkError(false)(否则落入
+ * internal-error 平局);改为返回空 move,由 arena.parseResolve('') 判 PARSER_INVALID → 正常打回。
+ */
 function extractToolUse(json: unknown): { analysis: string; move: string } {
   const resp = json as { content?: ToolUseBlock[] } | null;
-  if (!resp || !Array.isArray(resp.content)) {
-    throw new NetworkError('响应缺少 content 数组', false);
-  }
+  if (!resp || !Array.isArray(resp.content)) return { analysis: '', move: '' };
   const block = resp.content.find((b) => b?.type === 'tool_use');
-  if (!block) throw new NetworkError('响应缺少 tool_use 块(模型未按工具格式输出)', false);
+  if (!block) return { analysis: '', move: '' };
   const input = parseInput(block.input);
   const analysis = typeof input.analysis === 'string' ? input.analysis : '';
   const move = typeof input.move === 'string' ? input.move : '';

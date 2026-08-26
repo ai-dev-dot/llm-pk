@@ -77,6 +77,24 @@ describe('Arena 打回循环与判负', () => {
     for (const e of illegal) expect(e.reason.length).toBeGreaterThan(0);
   });
 
+  it('B2:模型返回空 move(响应缺 tool_use)→ 走打回循环,超限 illegal-moves 判负(不再 internal-error 平局)', async () => {
+    const arena = baseArena('g-b2', {
+      red: { player: { side: 'red', pickMove: async () => ({ analysis: '模型未按工具输出', move: '' }) } },
+      black: { player: { side: 'black', pickMove: async () => ({ analysis: 'x', move: '从不调用' }) } },
+    });
+    const events = collect(arena);
+
+    await arena.start();
+
+    expect(arena.state).toBe('finished');
+    const fin = lastFinish(events)!;
+    expect(fin.reason).toBe('illegal-moves'); // 空 move → PARSER_INVALID → 打回,而非 internal-error
+    expect(fin.winner).toBe('black');
+    const illegal = events.filter((e): e is IllegalAttemptEvent => e.type === 'illegal-attempt');
+    expect(illegal).toHaveLength(3);
+    expect(events.some((e) => e.type === 'error')).toBe(false); // 不落 ARENA_INTERNAL
+  });
+
   it('格式失败与非法共用同一打回计数器(混排 3 次同样判负)', async () => {
     const bad = ['这哪来的步', 'h9-h8', 'a1-z9']; // 解析失败 → 非法(起点无子) → 解析失败
     const arena = baseArena('g2', {
@@ -229,6 +247,22 @@ describe('Arena 守卫', () => {
     expect('reason' in draw && draw.reason).toBe('repeat');
     expect(lastFinish(events)!.reason).toBe('draw-repeat');
     expect(lastFinish(events)!.winner).toBe('draw');
+  });
+
+  it('B3:drawRepeat=2 → 同 board+turn 快照计次≥2 即判和(提前一轮)', async () => {
+    const arena = baseArena('g-b3', {
+      rules: { drawRepeat: 2 },
+      red: { player: scriptPlayer('red', ['a1-a2', 'a2-a1']) },
+      black: { player: scriptPlayer('black', ['i10-i9', 'i9-i10']) },
+    });
+    const events = collect(arena);
+
+    await arena.start();
+
+    expect(arena.state).toBe('finished');
+    expect(lastFinish(events)!.reason).toBe('draw-repeat');
+    expect(lastFinish(events)!.winner).toBe('draw');
+    expect(arena.moveCount).toBe(8); // 首局面(红先)第 2 次出现即停,无需等第 3 轮
   });
 });
 

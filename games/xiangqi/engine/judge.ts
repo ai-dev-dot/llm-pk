@@ -25,6 +25,9 @@ export interface ClassifyAllResult {
 /** 步数上限默认 200 半回合(spec: maxTotalMoves 可配)。 */
 const DEFAULT_MAX_TOTAL_MOVES = 200;
 
+/** 重复局面判和阈值默认 3 次(spec: drawRepeat 可配)。 */
+const DEFAULT_DRAW_REPEAT = 3;
+
 /** 进攻子力:车 / 马 / 炮 / 兵卒;仅剩将帅与仕相(士象)类防守子力即判无可胜子力。 */
 function hasMatingMaterial(b: Board): boolean {
   return b.some(
@@ -35,7 +38,7 @@ function hasMatingMaterial(b: Board): boolean {
 /**
  * 局面快照键:棋盘 90 格棋子序列 + 当前行棋方。
  * 每格编码:非空格 `side[0]+type[0]`(如 'rg' 红帅、'bc' 黑炮),空位 '.';
- * 末尾 `|` + turn。调度器每步后 push 该键到 history,供重复局面判定(count≥3 判和)复用。
+ * 末尾 `|` + turn。调度器每步后 push 该键到 history,供重复局面判定(count≥drawRepeat 判和,默认 3)复用。
  */
 export function snapshotKey(b: Board, turn: Side): string {
   let s = '';
@@ -51,7 +54,11 @@ export function snapshotKey(b: Board, turn: Side): string {
  * 4. 重复局面:同 (board, turn) 快照在 history 计次 ≥3 → draw-repeat;
  * 5. 其余:check / ongoing(reason=null)。
  */
-export function classifyAll(state: JudgeState, maxTotalMoves: number = DEFAULT_MAX_TOTAL_MOVES): ClassifyAllResult {
+export function classifyAll(
+  state: JudgeState,
+  maxTotalMoves: number = DEFAULT_MAX_TOTAL_MOVES,
+  drawRepeat: number = DEFAULT_DRAW_REPEAT,
+): ClassifyAllResult {
   const { board, turn, moveCount, history } = state;
   const phase = classify(board, turn);
   if (phase === 'checkmate' || phase === 'stalemate') return { type: phase, reason: null };
@@ -60,7 +67,7 @@ export function classifyAll(state: JudgeState, maxTotalMoves: number = DEFAULT_M
   const key = snapshotKey(board, turn);
   let repeats = 0;
   for (const k of history) if (k === key) repeats++;
-  if (repeats >= 3) return { type: 'draw', reason: 'draw-repeat' };
+  if (repeats >= drawRepeat) return { type: 'draw', reason: 'draw-repeat' };
   return { type: phase, reason: null };
 }
 

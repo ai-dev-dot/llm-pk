@@ -142,11 +142,13 @@ function illegalMoveReason(move: Move | undefined, board: Board | undefined, sid
       return `马不能从 ${fromS} 走到 ${toS}(不在马的「日」字步上)。`;
     }
     case 'elephant': {
-      const eye = pieceAt(board, {
-        file: from.file + (to.file - from.file) / 2,
-        rank: from.rank + (to.rank - from.rank) / 2,
-      });
-      if (eye !== null) return `象从 ${fromS} 跳到 ${toS} 被塞象眼,不能过。`;
+      // L6:先验「斜走两格」形状(|Δf|==|Δr|==2),形状不就再取中点 —— 否则小斜步会误报塞象眼。
+      const df = to.file - from.file;
+      const dr = to.rank - from.rank;
+      if (Math.abs(df) === 2 && Math.abs(dr) === 2) {
+        const eye = pieceAt(board, { file: from.file + df / 2, rank: from.rank + dr / 2 });
+        if (eye !== null) return `象从 ${fromS} 跳到 ${toS} 被塞象眼,不能过。`;
+      }
       if ((side === 'red' && to.rank > 4) || (side === 'black' && to.rank < 5)) return '象不能过河。';
       return `象从 ${fromS} 走到 ${toS} 不可能(象只能斜走两格)。`;
     }

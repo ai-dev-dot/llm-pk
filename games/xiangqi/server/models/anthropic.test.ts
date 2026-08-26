@@ -150,12 +150,33 @@ describe('AnthropicPlayer 基本调用', () => {
     expect(user).toContain('请换一步');
   });
 
-  it('响应缺 tool_use → 抛非 retryable NetworkError', async () => {
+  it('B2:响应缺 tool_use → 返回空 move(不再抛 NetworkError,解析层判 PARSER_INVALID → 打回)', async () => {
     stubFetch(new Response(JSON.stringify({ content: [{ type: 'text', text: '我不会' }] }), { status: 200 }));
     const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
-    await expect(p.pickMove(fakeCtx)).rejects.toSatisfy(
-      (e: unknown) => e instanceof NetworkError && e.retryable === false,
+    const c = await p.pickMove(fakeCtx);
+    expect(c.move).toBe('');
+    expect(c.analysis).toBe('');
+    expect(p.lastUsage).toMatchObject({ promptTokens: 0, completionTokens: 0 }); // usage 缺失回落 0,不抛
+  });
+
+  it('B2:响应缺 content 数组 → 同样返回空 move(打回)', async () => {
+    stubFetch(new Response(JSON.stringify({ stop_reason: 'end' }), { status: 200 }));
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    const c = await p.pickMove(fakeCtx);
+    expect(c.move).toBe('');
+  });
+
+  it('B2:工具参数缺失(输入无 move 键)→ 返回空 move(打回)', async () => {
+    stubFetch(
+      new Response(
+        JSON.stringify({ content: [{ type: 'tool_use', name: 'pick_move', input: { analysis: '只思考' } }] }),
+        { status: 200 },
+      ),
     );
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    const c = await p.pickMove(fakeCtx);
+    expect(c.move).toBe('');
+    expect(c.analysis).toBe('只思考'); // analysis 若有则照常提取
   });
 });
 

@@ -198,6 +198,16 @@ describe('engineReason 打回讲评(中文、不列答案)', () => {
     }
   });
 
+  it('L6:非象步形状(Δf=4,Δr=2)的中点恰有子 → 不误报塞象眼,回「不可能」', () => {
+    const b = cloneBoard(initialBoard());
+    // c1 红相 → g3 是 Δf=4、Δr=2 的非象步;e2 恰有子(修复前会把其中点当象眼误报)
+    b[sqToIdx(4, 1)] = { side: 'red', type: 'pawn' };
+    const move: Move = { from: { file: 2, rank: 0 }, to: { file: 6, rank: 2 } };
+    const r = engineReason('ILLEGAL_MOVE', move, b, 'red');
+    expect(r).toContain('不可能');
+    expect(r).not.toContain('塞象眼');
+  });
+
   it('ILLEGAL_MOVE 车斜走无路 → 点名棋子与起因', () => {
     const b = initialBoard();
     const move: Move = { from: { file: 8, rank: 0 }, to: { file: 7, rank: 1 } };

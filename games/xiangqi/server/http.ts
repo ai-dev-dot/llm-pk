@@ -200,11 +200,14 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
   /* ---------- POST /api/games ---------- */
   app.post('/api/games', (_req, res) => {
     const body = obj<Record<string, unknown>>(_req.body) ?? {};
-    const red = resolveSide('red', body.red, dflt);
-    const black = resolveSide('black', body.black, dflt);
-
     const cfgBody = obj<Record<string, unknown>>(body.config) ?? {};
+    const reqTimeoutMs = num(cfgBody.timeoutMs); // 请求级 config.timeoutMs(与 config.json timeout_ms 同权,请求级优先)
+    const red = resolveSide('red', body.red, dflt, reqTimeoutMs);
+    const black = resolveSide('black', body.black, dflt, reqTimeoutMs);
+
     const rules = resolveRules(cfgBody, dflt);
+    // B4:begin.rules.timeoutMs 须反映真实生效值 —— config.json 顶层 timeout_ms 亦参与回落,不再硬报默认 120000。
+    if (rules.timeoutMs === undefined && dflt.timeout_ms !== undefined) rules.timeoutMs = dflt.timeout_ms;
     const maxCostPerGame = num(cfgBody.maxCostPerGame) ?? dflt.maxCostPerGame;
     const networkRetryBaseDelayMs = num(cfgBody.networkRetryBaseDelayMs) ?? dflt.networkRetryBaseDelayMs;
 
@@ -329,6 +332,13 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
       res.status(err.status).json({ error: { code: err.code, message: err.message, hint: err.hint } });
       return;
     }
+    // L5:非法规则值(Arena 构造抛 RangeError,如 illegalAttemptsLimit:0)→ 400 VALIDATION_ERROR 而非 500。
+    if (err instanceof RangeError) {
+      res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: err.message, hint: '规则参数非法' },
+      });
+      return;
+    }
     const e = err as (Error & { status?: number; statusCode?: number; type?: string }) | undefined;
     const status = e?.status ?? e?.statusCode;
     // body-parser 等请求类错误(400..499):按原状态码回(如 413 超大 body),不误落 500
@@ -369,7 +379,7 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
   };
 
   /* ---------- 内部 ---------- */
-  function resolveSide(side: Side, raw: unknown, d: ServerDefaults): ResolvedSide {
+  function resolveSide(side: Side, raw: unknown, d: ServerDefaults, reqTimeoutMs?: number): ResolvedSide {
     const b = obj<Record<string, unknown>>(raw);
     if (!b) throw new HttpError(400, 'VALIDATION_ERROR', `body.${side} 必填`);
     const defSide = (side === 'red' ? d.red : d.black) ?? {};
@@ -382,7 +392,9 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     }
     const baseUrl = str(b.baseUrl) ?? d.base_url;
     if (!baseUrl) throw new HttpError(400, 'VALIDATION_ERROR', `body.${side}.baseUrl 必填`);
-    const apiKey = str(b.apiKey) ?? d.api_key;
+    // B1 密钥外带向量:未显式给 apiKey 时,仅在 baseUrl 与 config 的 base_url **完全一致**时
+    // 才允许回落 config 的 api_key;否则视为缺参(400),绝不把服务器 key 发给任意 baseUrl。
+    const apiKey = str(b.apiKey) ?? (baseUrl === d.base_url ? d.api_key : undefined);
     if (!apiKey) throw new HttpError(400, 'VALIDATION_ERROR', `body.${side}.apiKey 必填`);
 
     return {
@@ -391,7 +403,8 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
       model,
       systemPrompt: str(b.systemPrompt) ?? defSide.systemPrompt,
       maxTokens: num(b.maxTokens) ?? num(b.max_tokens) ?? defSide.maxTokens ?? d.max_tokens,
-      timeoutMs: num(b.timeoutMs) ?? num(b.timeout_ms) ?? defSide.timeoutMs ?? d.timeout_ms,
+      // B4:请求级 config.timeoutMs 与 config.json timeout_ms 同权;请求级优先,单边显式值仍最优先。
+      timeoutMs: num(b.timeoutMs) ?? num(b.timeout_ms) ?? defSide.timeoutMs ?? reqTimeoutMs ?? d.timeout_ms,
       tokensPerM: obj(b.tokensPerM) ?? defSide.tokensPerM,
     };
   }

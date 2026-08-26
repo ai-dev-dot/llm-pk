@@ -36,9 +36,12 @@ if (!Number.isInteger(port) || port <= 0 || port > 65535) {
   process.exit(1);
 }
 
+// 安全:默认只绑本机回环(不暴露到 0.0.0.0),避免局域网内密钥外带/意外暴露;HOST 可显式覆盖。
+const host = process.env.HOST ?? '127.0.0.1';
+
 const srv = createXiangqiServer({ config });
 
-srv.server.listen(port, () => {
+srv.server.listen(port, host, () => {
   // eslint-disable-next-line no-console
   console.log(`[xiangqi-server] 已启动: http://127.0.0.1:${port}`);
   // eslint-disable-next-line no-console

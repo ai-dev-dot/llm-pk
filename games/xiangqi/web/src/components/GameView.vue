@@ -5,7 +5,7 @@
 // 双思考卡(ThoughtPanel)、记谱履历(悬停看 analysis)、控制条(GameControls)。
 // 事件源为 useGame(WS 订阅 + since 断线续传);本组件只做展示与把控制动作煮成 REST。
 //
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import XQBoard from './XQBoard.vue';
 import ThoughtPanel from './ThoughtPanel.vue';
 import ReviewPanel from './ReviewPanel.vue';
@@ -13,6 +13,7 @@ import GameControls from './GameControls.vue';
 import { useGame, type NewGameConfig } from '../composables/useGame';
 import type { MoveRecord } from '../composables/useGame';
 import { fmtMs, fmtRound, fmtReason, fmtUsd } from '../lib/format';
+import { play, setMuted, unlock } from '../lib/sfx';
 import type { Side } from '../../../engine/types';
 
 const props = defineProps<{
@@ -45,9 +46,37 @@ watch(
   },
 );
 
+/* ---------- B5 音效:move/captured → Web Audio;🔊/🔇 真 toggle ---------- */
+let soundSeq = 0;
+let lastPieceCount = -1;
+watch(
+  () => game.events.length,
+  (len) => {
+    while (soundSeq < len) {
+      const evt = game.events[soundSeq++]!;
+      if (evt.type === 'move' && evt.legal !== false) {
+        // 吃子可经棋盘子数下降识别(move 应用后减少 1)→ 吃子音;否则走子音
+        const count = game.board.length;
+        if (lastPieceCount >= 0 && count < lastPieceCount) play('capture');
+        else play('move');
+        lastPieceCount = count;
+      }
+    }
+  },
+  { immediate: true },
+);
+// 自动播放策略:首个用户手势解锁 AudioContext(header 点击/mute 按钮皆可)
+let unlockCleanup: (() => void) | undefined;
+onMounted(() => {
+  const handler = () => unlock();
+  window.addEventListener('pointerdown', handler, { capture: true });
+  unlockCleanup = () => window.removeEventListener('pointerdown', handler, { capture: true });
+});
+
 onBeforeUnmount(() => {
   game.controls.destroy();
   clearTimeout(checkTimer);
+  unlockCleanup?.();
 });
 
 /* ---------- 派生 ---------- */
@@ -78,6 +107,8 @@ function onSpeed(v: number): void {
 }
 function onToggleMute(): void {
   muted.value = !muted.value;
+  unlock(); // 手势解锁 AudioContext
+  setMuted(muted.value);
 }
 
 const lastAnalysis = (side: Side): string => game.liveThoughts[side] ?? '';
