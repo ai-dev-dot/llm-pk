@@ -111,12 +111,85 @@ export function horseMoves(b: Board, sq: Sq, side: Side): Move[] {
  * - 目标格为敌方棋子可吃(并入结果),己方棋子剔除。
  * - threats 保留参数位(送将/照面过滤使用),本阶段忽略。
  */
+/** 九宫:file 3..5;红 rank 0..2、黑 rank 7..9 */
+const inPalace = (file: number, rank: number, side: Side): boolean => {
+  if (file < 3 || file > 5) return false;
+  return side === 'red' ? rank >= 0 && rank <= 2 : rank >= 7 && rank <= 9;
+};
+
+const ELEPHANT_STEPS: ReadonlyArray<readonly [number, number]> = [
+  [2, 2], [-2, 2], [2, -2], [-2, -2],
+];
+
+/**
+ * 象/相:沿对角线跳两格(±2,±2)。
+ * 塞象眼:途经的对角中点(Δ±1,±1)有子则不可跳。
+ * 不得过河:红相目标 rank<=4,黑象目标 rank>=5(留在己侧 5 行)。
+ * 越界目标丢弃;目标格为敌方含吃、己方剔除。
+ */
+export function elephantMoves(b: Board, sq: Sq, side: Side): Move[] {
+  const res: Move[] = [];
+  for (const [df, dr] of ELEPHANT_STEPS) {
+    const eye: Sq = { file: sq.file + df / 2, rank: sq.rank + dr / 2 };
+    if (pieceAt(b, eye) !== null) continue;                 // 塞象眼
+    const to: Sq = { file: sq.file + df, rank: sq.rank + dr };
+    if (!inBoard(to.file, to.rank)) continue;
+    if (side === 'red' && to.rank > 4) continue;            // 红相不过河
+    if (side === 'black' && to.rank < 5) continue;          // 黑象不过河
+    if (!canOccupy(b, to, side)) continue;
+    res.push({ from: sq, to });
+  }
+  return res;
+}
+
+const ADVISOR_STEPS: ReadonlyArray<readonly [number, number]> = [
+  [1, 1], [-1, 1], [1, -1], [-1, -1],
+];
+
+/**
+ * 士/仕:在己方九宫内沿对角线走一步(±1,±1)。
+ * 越出九宫/棋盘的目标丢弃;目标格为敌方含吃、己方剔除。
+ */
+export function advisorMoves(b: Board, sq: Sq, side: Side): Move[] {
+  const res: Move[] = [];
+  for (const [df, dr] of ADVISOR_STEPS) {
+    const to: Sq = { file: sq.file + df, rank: sq.rank + dr };
+    if (!inPalace(to.file, to.rank, side)) continue;
+    if (!canOccupy(b, to, side)) continue;
+    res.push({ from: sq, to });
+  }
+  return res;
+}
+
+const GENERAL_STEPS: ReadonlyArray<readonly [number, number]> = [
+  [1, 0], [-1, 0], [0, 1], [0, -1],
+];
+
+/**
+ * 帅/将:在己方九宫内直走一步(仅横/竖,不可斜向)。
+ * 将帅照面否决由后续送将任务处理,本函数只按九宫+直一步生成。
+ * 越出九宫/棋盘的目标丢弃;目标格为敌方含吃、己方剔除。
+ */
+export function generalMoves(b: Board, sq: Sq, side: Side): Move[] {
+  const res: Move[] = [];
+  for (const [df, dr] of GENERAL_STEPS) {
+    const to: Sq = { file: sq.file + df, rank: sq.rank + dr };
+    if (!inPalace(to.file, to.rank, side)) continue;
+    if (!canOccupy(b, to, side)) continue;
+    res.push({ from: sq, to });
+  }
+  return res;
+}
+
 export function rawMovesFor(b: Board, sq: Sq, side: Side, _threats?: unknown): Move[] {
   const p = pieceAt(b, sq);
   if (!p || p.side !== side) return [];
   switch (p.type) {
     case 'pawn': return pawnMoves(b, sq, side);
     case 'horse': return horseMoves(b, sq, side);
-    default: return [];   // 其余棋种由后续任务实现
+    case 'elephant': return elephantMoves(b, sq, side);
+    case 'advisor': return advisorMoves(b, sq, side);
+    case 'general': return generalMoves(b, sq, side);
+    default: return [];   // 车/炮由后续任务实现
   }
 }

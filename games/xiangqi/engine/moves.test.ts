@@ -87,3 +87,84 @@ describe('共享直线 helper(供后续车/炮/象复用)', () => {
     expect(isPathClear(b2, codeToSq('a1'), codeToSq('a3'))).toBe(true);  // 至 a3 无中间格
   });
 });
+
+describe('象(elephant)走法', () => {
+  it('黑象被塞象眼:c10 黑象 + d9 卒塞 e8 方向,但 a8 方向眼空可达', () => {
+    // d9=(3,8) 是 c10=(2,9)→e8=(4,7) 的象眼中点,塞的是 e8 向;
+    // a8=(0,7) 向眼中点 b9=(1,8) 无子,不可不达(修正 brief 期望 0 → 1)
+    const board = emptyWith({ 'c10': { side: 'black', type: 'elephant' }, 'd9': { side: 'black', type: 'pawn' } });
+    expect(moves(board, 'c10', 'black').sort()).toEqual(['a8']);
+  });
+  it('红相田字跳且不过河(红 rank<=4)', () => {
+    const board = emptyWith({ 'c5': { side: 'red', type: 'elephant' } });
+    expect(moves(board, 'c5', 'red').sort()).toEqual(['a3', 'e3']); // a7/e7 过河剔除
+  });
+  it('黑象不过河(黑 rank>=5)', () => {
+    const board = emptyWith({ 'e5': { side: 'black', type: 'elephant' } });
+    expect(moves(board, 'e5', 'black').sort()).toEqual(['c7', 'g7']); // c3/g3 在红侧剔除
+  });
+  it('象眼有子则该方向跳无效;四向眼全塞则无走法', () => {
+    const board = emptyWith({ 'c3': { side: 'red', type: 'elephant' }, 'd2': { side: 'red', type: 'pawn' } });
+    expect(moves(board, 'c3', 'red').sort()).toEqual(['a1', 'a5', 'e5']); // e1 向被 d2 塞眼
+    const board2 = emptyWith({
+      'c3': { side: 'red', type: 'elephant' },
+      'b2': { side: 'red', type: 'pawn' }, 'd2': { side: 'red', type: 'pawn' },
+      'b4': { side: 'red', type: 'pawn' }, 'd4': { side: 'red', type: 'pawn' },
+    });
+    expect(moves(board2, 'c3', 'red')).toEqual([]); // a1/e1/a5/e5 四向眼全被塞
+  });
+  it('象可吃目标格敌子;目标格己方子剔除', () => {
+    const board = emptyWith({ 'c3': { side: 'red', type: 'elephant' }, 'e1': { side: 'black', type: 'pawn' } });
+    expect(moves(board, 'c3', 'red')).toContain('e1');
+    const board2 = emptyWith({ 'c3': { side: 'red', type: 'elephant' }, 'e1': { side: 'red', type: 'pawn' } });
+    expect(moves(board2, 'c3', 'red')).not.toContain('e1');
+  });
+});
+
+describe('士(advisor)走法', () => {
+  it('红仕九宫斜一步;e1 帅存在时 d1 仕只能到 e2', () => {
+    const board = emptyWith({ 'e1': { side: 'red', type: 'general' }, 'd1': { side: 'red', type: 'advisor' } });
+    expect(moves(board, 'd1', 'red').sort()).toEqual(['e2']); // c2 出宫;e2 唯一宫内斜点
+  });
+  it('仕不能出九宫(九宫边界裁剪)', () => {
+    const board = emptyWith({ 'd2': { side: 'red', type: 'advisor' } });
+    expect(moves(board, 'd2', 'red').sort()).toEqual(['e1', 'e3']); // c1/c3 出宫(file2)
+  });
+  it('黑仕在己方九宫斜一步', () => {
+    const board = emptyWith({ 'e10': { side: 'black', type: 'advisor' } });
+    expect(moves(board, 'e10', 'black').sort()).toEqual(['d9', 'f9']);
+  });
+  it('仕可吃敌子;不能直走/横走', () => {
+    const board = emptyWith({ 'd1': { side: 'red', type: 'advisor' }, 'e2': { side: 'black', type: 'pawn' } });
+    expect(moves(board, 'd1', 'red')).toContain('e2');
+    const board2 = emptyWith({ 'd1': { side: 'red', type: 'advisor' }, 'e1': { side: 'black', type: 'pawn' } });
+    expect(moves(board2, 'd1', 'red')).not.toContain('e1'); // 直移到 e1 不可
+  });
+});
+
+describe('帅/将(general)走法', () => {
+  it('红帅九宫直一步:e1 可到 d1/e2/f1;不斜走', () => {
+    const board = emptyWith({ 'e1': { side: 'red', type: 'general' } });
+    expect(moves(board, 'e1', 'red').sort()).toEqual(['d1', 'e2', 'f1']); // d2/f2 为斜点,剔除
+  });
+  it('帅在九宫中心四向皆可', () => {
+    const board = emptyWith({ 'e2': { side: 'red', type: 'general' } });
+    expect(moves(board, 'e2', 'red').sort()).toEqual(['d2', 'e1', 'e3', 'f2']); // d1/f1/d3/f3 斜点不可
+  });
+  it('黑将九宫直一步且不出宫', () => {
+    const board = emptyWith({ 'e10': { side: 'black', type: 'general' } });
+    expect(moves(board, 'e10', 'black').sort()).toEqual(['d10', 'e9', 'f10']); // rank10 越界出宫
+  });
+  it('帅不能斜走(即使目标在九宫内)', () => {
+    const board = emptyWith({ 'e2': { side: 'red', type: 'general' } });
+    const hs = moves(board, 'e2', 'red');
+    expect([...hs].sort()).toEqual(['d2', 'e1', 'e3', 'f2']);
+    for (const diag of ['d1', 'f1', 'd3', 'f3']) expect(hs).not.toContain(diag);
+  });
+  it('帅可吃敌子;己方剔除', () => {
+    const board = emptyWith({ 'e2': { side: 'red', type: 'general' }, 'f2': { side: 'black', type: 'pawn' } });
+    expect(moves(board, 'e2', 'red')).toContain('f2');
+    const board2 = emptyWith({ 'e2': { side: 'red', type: 'general' }, 'f2': { side: 'red', type: 'pawn' } });
+    expect(moves(board2, 'e2', 'red')).not.toContain('f2');
+  });
+});
