@@ -14,7 +14,8 @@ for (let i = 0; i < 26; i++) {
   HALF_MAP[String.fromCharCode(0xff41 + i)] = String.fromCharCode(0x61 + i);   // ａ-ｚ
 }
 
-function normalize(text: string): string {
+/** 归一化:全角→半角、去空白与标点、小写化。导出供 resolver 缓存键与 raw 解析复用。 */
+export function normalize(text: string): string {
   let out = '';
   for (const ch of text) {
     const half = HALF_MAP[ch];
@@ -180,23 +181,40 @@ function parseChinese(s: string, board: Board, side: Side): ParseResult {
 
   const t = computeTarget(side, type, from, action, num);
   if (!t.ok) return t;
-  return validateMove(board, side, t.move);
+  // 仅返回结构可解析的走法;合法性校验由上层(parseMove / resolver parseResolve)统一做。
+  return { ok: true, move: t.move };
 }
 
 /**
- * 自由文本 → 结构化走法。
- * 支持:坐标 `h3-e3`/`h3e3`、中文记谱(红/黑双向,含同线双子前/后)、空格/全角词法容错。
- * 解析不出/歧义/非法一律 { ok:false } 并带稳定 reason。
+ * 结构解析(不含合法性):自由文本 → 具体走法。
+ * 只做:归一化、坐标/中文记谱语法、棋子定位与起点归属;
+ * 不做 legalMoves 校验(与 parseMove 的区别在后者追加 validateMove)。
+ * 供 resolver/打回诊断复用:解析层一次,合法性矩阵按回合缓存,避免重复计算。
  */
-export function parseMove(text: string, board: Board, side: Side): ParseResult {
+export function parseMoveRaw(text: string, board: Board, side: Side): ParseResult {
   const s = normalize(text);
   if (s.length === 0) return { ok: false, reason: 'PARSER_INVALID' };
 
   const c = COORD_RE.exec(s);
   if (c) {
-    const from: Sq = { file: c[1]!.charCodeAt(0) - 97, rank: Number(c[2]) - 1 };
-    const to: Sq = { file: c[3]!.charCodeAt(0) - 97, rank: Number(c[4]) - 1 };
-    return validateMove(board, side, { from, to });
+    const move: Move = {
+      from: { file: c[1]!.charCodeAt(0) - 97, rank: Number(c[2]) - 1 },
+      to: { file: c[3]!.charCodeAt(0) - 97, rank: Number(c[4]) - 1 },
+    };
+    const p = pieceAt(board, move.from);
+    if (!p || p.side !== side) return { ok: false, reason: 'PIECE_NOT_FOUND' };
+    return { ok: true, move };
   }
   return parseChinese(s, board, side);
+}
+
+/**
+ * 自由文本 → 已校验走法(含合法矩阵过滤;送将/非法统一 ILLEGAL_MOVE)。
+ * 支持:坐标 `h3-e3`/`h3e3`、中文记谱(红/黑双向,含同线双子前/后)、空格/全角词法容错。
+ * 解析不出/歧义/非法一律 { ok:false } 并带稳定 reason。
+ */
+export function parseMove(text: string, board: Board, side: Side): ParseResult {
+  const r = parseMoveRaw(text, board, side);
+  if (!r.ok) return r;
+  return validateMove(board, side, r.move);
 }
