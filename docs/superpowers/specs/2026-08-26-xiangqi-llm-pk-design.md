@@ -339,7 +339,7 @@ npm run dev      # 后端 + Vite 前端;打开 localhost:5173
 
 对局日志落 `games/xiangqi/logs/<gameId>.jsonl`(目录在 `.gitignore`)。
 
-**密钥与配置分层(评审已批准,硬性条款)**:`config` 的 `base_url / api_key / model` 只存在于 `.env`/`config.json`,仅在**构造模型客户端时**被读取;**绝不**序列化进事件、日志、WS 消息或任何对外 payload;日志写入器对事件对象执行敏感字段黑名单断言(见 §12 测试)。
+**密钥与配置分层(评审已批准,硬性条款)**:`config` 的 `base_url / api_key` 只存在于 `.env`/`config.json`,仅在**构造模型客户端时**被读取;**绝不**序列化进事件、日志、WS 消息或任何对外 payload;日志写入器对事件对象执行敏感字段黑名单断言(见 §12 测试)。**例外**:`model` 名可进入 `begin` 事件——它是评估与复盘识别红黑所用模型的关键标识,非密钥。
 
 ## 14. 里程碑
 
