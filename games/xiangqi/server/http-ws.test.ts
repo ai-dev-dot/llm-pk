@@ -548,6 +548,7 @@ describe('赛后复盘接线(review 独立凭据与降级)', () => {
         elapsedMs: 7,
         usage: { promptTokens: 100, completionTokens: 30, costUsd: 0.0004 },
       });
+      expect(reviews[0]!.keyPoints).toEqual(['红先左兵试探', '黑右卒应对']); // 兼容别名与 highlights 同值
 
       // seq 延续:review 在 finish 之后,单调递增
       const finishSeq = record.events.find((e) => e.type === 'finish')?.seq ?? 0;

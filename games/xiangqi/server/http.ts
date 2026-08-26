@@ -490,6 +490,7 @@ async function triggerReview(record: GameRecord, ctx: ReviewContext): Promise<vo
     summary: review.summary,
     highlights: review.highlights,
     mistakes: review.mistakes,
+    keyPoints: review.highlights, // 兼容别名:早期前端仅消费 keyPoints,映射同值保证要点可渲染
     model: review.model,
     elapsedMs: review.elapsedMs,
     usage: review.usage,
