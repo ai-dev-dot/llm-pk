@@ -75,6 +75,7 @@ games/xiangqi/
 │   └── __tests__/                 # Vitest 单测
 ├── server/
 │   ├── main.ts                    # Express + WebSocket 启动,装配依赖
+│   ├── game-registry.ts           # 多局并存:Map<gameId, ArenaSession>(每局一实例)
 │   ├── arena.ts                   # 调度器:回合仲裁、状态机、超时/重试
 │   ├── session.ts                 # 双方独立会话上下文管理(原则 C)
 │   ├── game-log.ts                # append-only JSONL 事件日志
@@ -229,10 +230,33 @@ session.black = [ systemPrompt(黑·含规则说明), ...历史(公共移动序�
 状态机:
 
 ```
-idle → running →(pause)⇄(resume / step)running → finished
+create ─► idle ─(start)─► running ─(move完成)─► …running…
+             ▲              │  ▲
+             │ (resume/step) └──┘ (pause)
+             └────────────────┘
+  running ─(finish / draw / 判负)─► finished(终态,不可写)
 ```
 
-每回合:`引擎.legalMoves` → `session[side].push(当前问题)` → `player.pickMove` → `engine` 校验 → `applyMove` / `classify` → 写事件广播 → 换 side。
+每局一个 `ArenaSession` 实例,由 `game-registry.ts` 注册/销毁;WS/REST 按 `gameId` 路由到对应实例。回合数据流(含打回循环):
+
+```
+ArenaSession          Player(model)
+ state,turn ─render──►┌──────────────┐
+   当前棋盘/history/    │ 自由思考,自提走法│
+   selfThoughts窗口/   └──────┬───────┘
+   rejection?                │ {analysis, move文本}
+             ┌───────────────▼───────────────┐
+             │ engine.notation.parseMove      │
+             │   → 合法性校验(legalMoves)     │
+             └───────────────┬───────────────┘
+   非法 → rejection{reason}(同回合覆盖最新一条)
+        ← 再调一次 Player(附该 reason)
+   合法 → applyMove → judge → 写事件(append JSONL)
+        → WS 广播 → 换 turn → 重复
+   finish/draw/判负 → finished(不可写)
+```
+
+**并发(评审已批准)**:`game-registry.ts` 以 `Map<gameId, ArenaSession>` 管理多局并存;每局独立实例、独立状态机,互不污染;`/ws/games/:id` 与 REST 均按 `gameId` 路由。
 
 异常与打回/判罚(对双方完全对称):
 
@@ -246,7 +270,9 @@ idle → running →(pause)⇄(resume / step)running → finished
 | 网络重试超限 | **判该方负** `reason: timeout`,正常收尾留痕 |
 
 - **打回 ≠ 异常**:是调试过程中的正常回合;UI 展示"被裁判打回一次"并可回看原因;
-- 每次打回都在 `session[side]` 追加 `rejection{ reason }`(即"裁判的讲解"),帮助模型下次走对——但**不含"正确答案枚举"**;
+- **同回合打回消息覆盖(评审已批准)**:`session[side]` 中每回合只保留**最新一条** `rejection{ reason }`(覆盖前一条),避免多轮打回造成会话膨胀与旧错误信息干扰;
+- 每次打回都以 `rejection{ reason }` 呈现"裁判的讲解",帮助模型下次走对——但**不含"正确答案枚举"**;
+- **每回合只算一次裁决**(评审建议):`parseMove`+`legalMoves` 结果按 `(gameId, halfMove, round)` 缓存,打回重试时复用,避免重复计算;
 - 终局事件 `finish` 携带双方 `ruleViolations` 作测评维度。
 
 控制接口:`POST /api/games/:id/pause|resume|step`(step 仅在暂停态可用)。
@@ -260,7 +286,15 @@ idle → running →(pause)⇄(resume / step)running → finished
   - 双方思考卡片:`thinking…/分析流式输出`、耗时、累计用时;
   - 记谱履历(悬停显示各步思考)、回合/步数/用时;
   - 播放/暂停/单步/重开、速度、**静音开关**、结束横幅;
-- 回放:`replay.ts` 从日志重建事件序列,前端提供播放/步进/回退/时间轴拖动;回放与实时同源(实施时做"回放 vs 实时双跑 diff"测试,确保回放无重演偏差);
+- 回放:`replay.ts` 从日志重建事件序列,前端提供播放/步进/回退/时间轴拖动;回放与实时同源(实施时做"回放 vs 实时双跑 diff"测试,确保回放无重演偏差);回放链路(评审新增图):
+
+```
+<gameId>.jsonl ──► replay.ts ──► 逐事件重建(无状态纯函数,不触 arena 实例)
+  append-only       ▲             ├─ 棋盘渲染(与实时同一 render)
+                    │             ├─ 思考/耗时/token 成本展示
+ WS 实时(seq 增量)──┘             └─ 时间轴(播放/步进/回退/拖动)
+ 与回放共用同一事件序列 ⇒ 严格同源
+```
 - **思考成本展示(本期已批准)**:UI 每步显示耗时 + token + 折算成本($US),顶部汇总本局总计,供评估比较;
 - **赛后 AI 复盘摘要(本期已批准)**:`POST /api/games/:id/review` 或自动在对局终局后异步生成——由专用审查模型(可配,可能与对局模型无关)阅读公共日志(含各步已披露的 analysis,不含任何私有上下文),输出关键转变/失误要点;结果作为 `review` 事件追加进日志与展示;摘要生成失败不影响对局,**绝不**回写对弈上下文(原则 C)。
 
@@ -277,7 +311,13 @@ idle → running →(pause)⇄(resume / step)running → finished
 - **引擎单测**(优先级最高):七兵种走法、过河/不得送将/九宫/河界、将帅照面、将军与应将、将死、困毙、重复局面、无胜子和棋;每类红黑镜像断言(公证性);
 - **记谱解析单测**(原则 D 的核心):`parseMove` 覆盖中文记谱(含同线双车需"前/后"字、同名子歧义)、坐标格式、非法文本、红黑两向;歧义走法一律解析失败走打回(绝不猜测);
 - **服务集成测试**:mock `Player` 脚本化走法,验证回合流程、日志落盘、暂停/单步;**连续非法 → 打回循环与 `illegalAttemptsLimit` 上限判负**;spy 断言打回 `reason` 中不含任何合法走法串;`ruleViolations` 进入 `finish`;隔离(断言一方上下文绝不含对方 analysis);
+- **评审新增测试矩阵(评审已批准并入)**:
+  1. **会话管理测试** — `contextBudgetTokens` 超预算时的裁剪顺序(先剪旧 analysis 再截历史)与 `carrySelfAnalysisN` 窗口截断行为;
+  2. **WS 断线重连测试** — 断线后按 `lastSeq` 增量续传、不丢步;
+  3. **密钥隔离断言** — 事件与日志全程不含 config 的敏感字段;
+  4. **摘要降级测试** — 审查模型超时/500 时,对局正常结束、摘要缺位不阻塞、UI 降级提示;
 - 真实 Anthropic 冒烟脚本(需 key)供手动联调;声音/渲染为前端手工验收部分。
+- **性能(评审无阻塞)**:引擎兵种枚举 O(90),每回合裁决缓存复用;LLM 调用延迟主导观感,不构成代码性能热点。
 
 ## 13. 配置与运行
 
@@ -290,6 +330,8 @@ npm run dev      # 后端 + Vite 前端;打开 localhost:5173
 ```
 
 对局日志落 `games/xiangqi/logs/<gameId>.jsonl`(目录在 `.gitignore`)。
+
+**密钥与配置分层(评审已批准,硬性条款)**:`config` 的 `base_url / api_key / model` 只存在于 `.env`/`config.json`,仅在**构造模型客户端时**被读取;**绝不**序列化进事件、日志、WS 消息或任何对外 payload;日志写入器对事件对象执行敏感字段黑名单断言(见 §12 测试)。
 
 ## 14. 里程碑
 
