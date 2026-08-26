@@ -1,0 +1,40 @@
+/* ============ 设计令牌(全局) ============ */
+:root {
+  --bg: #16110d;
+  --bg-2: #100c09;
+  --panel: #211a13;
+  --panel-2: #2a2118;
+  --line: #3a2f22;
+  --ink: #ece1cd;
+  --ink-dim: #a8987e;
+  --ink-soft: #7d6f58;
+  --wood-1: #e3c08f;
+  --wood-2: #c6a06a;
+  --wood-line: #6d4a27;
+  --wood-ink: #5f4126;
+  --red: #c8422c;
+  --red-dim: #a03b2a;
+  --kuro: #26221f;
+  --seal: #b03a26;
+  --amber: #dba864;
+  --font-display: "Kaiti SC", "STKaiti", "KaiTi", "楷体", "Noto Serif SC", "Source Han Serif SC", "SimSun", serif;
+  --font-body: "PingFang SC", "Microsoft YaHei", "微软雅黑", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  background: radial-gradient(1200px 700px at 50% -10%, #221a12 0%, var(--bg) 55%, var(--bg-2) 100%);
+  color: var(--ink);
+  font-family: var(--font-body);
+}
