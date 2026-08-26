@@ -1,7 +1,11 @@
-import { PieceType, Side, Sq, codeToSq, sqToCode, sqKey } from './types';
+import type { PieceType, Side, Sq } from './types';
+import { codeToSq, sqToCode, sqKey } from './types';
 
 // 重新导出坐标体系等类型工具,便于测试/上层单点 import
-export { PieceType, Side, Sq, codeToSq, sqToCode, sqKey } from './types';
+// 类型与值分开再导出:esbuild/isolatedModules 每文件独立变换,混写会使 type-only
+// 名称残留为运行期导出,tsx/Node ESM 实例化时报 "does not provide an export"。
+export type { PieceType, Side, Sq } from './types';
+export { codeToSq, sqToCode, sqKey } from './types';
 
 export interface Piece { side: Side; type: PieceType }
 export type Board = (Piece | null)[];   // 恒长 90

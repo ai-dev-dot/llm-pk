@@ -5,6 +5,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "spike:parse": "tsx scripts/spike-parse.ts",
     "dev": "tsx watch server/main.ts"
   },
   "devDependencies": {

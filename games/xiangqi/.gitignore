@@ -1,0 +1,7 @@
+# 对局 AI 配置(含密钥)与 spike 产物 —— 绝不入库
+config.json
+config.local.json
+scripts/spike-result.json
+
+# 对局日志(spec: logs/ 目录 gitignore)
+logs/
