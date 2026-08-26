@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>楚河汉界 · 大模型对决</title>
+<style>
+  /* ============ 设计令牌 ============ */
+  :root{
+    --bg:#16110d;           /* 观战厅 · 深墨褐 */
+    --bg-2:#100c09;
+    --panel:#211a13;
+    --panel-2:#2a2118;
+    --line:#3a2f22;
+    --ink:#ece1cd;
+    --ink-dim:#a8987e;
+    --ink-soft:#7d6f58;
+    --wood-1:#e3c08f;       /* 棋盘木 */
+    --wood-2:#c6a06a;
+    --wood-line:#6d4a27;
+    --wood-ink:#5f4126;
+    --red:#c8422c;
+    --red-dim:#a03b2a;
+    --kuro:#26221f;
+    --seal:#b03a26;
+    --amber:#dba864;
+    --font-display:"Kaiti SC","STKaiti","KaiTi","楷体","Noto Serif SC","Source Han Serif SC","SimSun",serif;
+    --font-body:"PingFang SC","Microsoft YaHei","微软雅黑","Noto Sans SC",system-ui,sans-serif;
+    --font-mono:"SF Mono","Cascadia Code",Consolas,"Courier New",monospace;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:radial-gradient(1200px 700px at 50% -10%, #221a12 0%, var(--bg) 55%, var(--bg-2) 100%);
+    color:var(--ink);
+    font-family:var(--font-body);
+    height:100vh;
+    display:grid;
+    grid-template-rows:auto 1fr auto;
+    overflow:hidden;
+  }
+
+  /* ============ 页眉 ============ */
+  .page-header{
+    display:flex;align-items:center;gap:16px;
+    padding:14px 24px 12px;
+    border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg, rgba(230,180,110,.04), transparent);
+  }
+  .seal{
+    width:40px;height:40px;flex:none;
+    background:var(--seal);
+    color:#f6ead6;font-family:var(--font-display);font-size:24px;
+    display:flex;align-items:center;justify-content:center;
+    border-radius:6px;box-shadow:0 2px 8px rgba(176,58,38,.35);
+    font-weight:700;
+  }
+  .brand{line-height:1.1}
+  .brand h1{margin:0;font-family:var(--font-display);font-size:22px;font-weight:600;letter-spacing:.12em}
+  .brand .brand-sub{margin:3px 0 0;font-size:12px;color:var(--ink-dim);letter-spacing:.28em}
+  .hdr-right{margin-left:auto;display:flex;align-items:center;gap:14px}
+  .mini-pieces{display:flex;gap:6px;align-items:center}
+  .mini{width:20px;height:20px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    font-family:var(--font-display);font-size:12px}
+  .mini.red{color:var(--red);border:1px solid var(--red-dim)}
+  .mini.black{color:#d8cbb2;border:1px solid #5a5146}
+  .status-pill{
+    font-size:12px;color:var(--ink-dim);border:1px solid var(--line);
+    padding:5px 10px;border-radius:20px;display:flex;align-items:center;gap:6px;
+  }
+  .status-pill .beam{width:7px;height:7px;border-radius:50%;background:var(--amber);
+    box-shadow:0 0 8px var(--amber);animation:beam 1.6s ease-in-out infinite}
+  @keyframes beam{0%,100%{opacity:.45}50%{opacity:1}}
+
+  /* ============ 主体 ============ */
+  main{display:grid;grid-template-columns:minmax(0,1fr) 392px;gap:18px;
+    padding:18px 24px;min-height:0;overflow:hidden}
+
+  .stage{display:flex;align-items:center;justify-content:center;min-width:0;position:relative}
+  .board-frame{
+    background:linear-gradient(160deg,var(--wood-1),var(--wood-2));
+    border-radius:10px;padding:14px;
+    box-shadow:0 24px 60px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.18);
+    position:relative;
+  }
+  #board{display:block;width:100%;max-width:min(calc(100vh - 240px),600px);height:auto}
+  .board-corner{
+    position:absolute;right:12px;bottom:6px;color:var(--wood-ink);opacity:.55;
+    font-family:var(--font-display);font-size:12px;letter-spacing:.1em
+  }
+  .check-badge{
+    position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);
+    font-family:var(--font-display);font-size:34px;color:var(--seal);
+    text-shadow:0 2px 10px rgba(0,0,0,.35);
+    opacity:0;pointer-events:none;transition:opacity .2s;
+  }
+  .check-badge.show{opacity:1;animation:checkPop .9s ease forwards}
+  @keyframes checkPop{0%{transform:translate(-50%,-50%) scale(.6)}40%{transform:translate(-50%,-50%) scale(1.12)}100%{transform:translate(-50%,-50%) scale(1);opacity:0}}
+
+  /* 结束横幅 */
+  .end-banner{
+    position:absolute;inset:0;display:flex;flex-direction:column;gap:10px;
+    align-items:center;justify-content:center;
+    background:rgba(12,8,5,.55);backdrop-filter:blur(2px);
+    border-radius:10px;opacity:0;pointer-events:none;transition:opacity .4s;
+  }
+  .end-banner.show{opacity:1;pointer-events:auto}
+  .end-banner .result{
+    font-family:var(--font-display);font-size:44px;letter-spacing:.12em;color:var(--ink);
+    text-shadow:0 3px 18px rgba(0,0,0,.6)
+  }
+  .end-banner .result b{color:var(--red)}
+  .end-banner .reason{color:var(--ink-dim);font-size:14px;letter-spacing:.2em}
+  .end-banner .btn{margin-top:14px}
+
+  /* ============ 右栏 ============ */
+  .side{display:flex;flex-direction:column;gap:12px;min-height:0;overflow-y:auto;padding-right:2px}
+  .side::-webkit-scrollbar{width:6px}
+  .side::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+
+  .meta-bar{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink-dim)}
+  .meta-bar .cell{border:1px solid var(--line);background:var(--panel);padding:7px 12px;border-radius:8px;display:flex;gap:8px;align-items:center}
+  .meta-bar .cell b{color:var(--ink);font-family:var(--font-mono);font-weight:600}
+  .meta-bar .divider{width:1px;height:18px;background:var(--line)}
+
+  .p-card{
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:12px 14px;}
+  .p-card.active{border-color:var(--red-dim);box-shadow:0 0 0 1px rgba(200,66,44,.15), 0 8px 22px rgba(0,0,0,.3)}
+  .p-card.busy::before{content:'';display:block;height:2px;border-radius:2px;width:100%;
+    background:linear-gradient(90deg,var(--red),transparent);animation:sweep 1.2s linear infinite}
+  @keyframes sweep{from{transform:translateX(-101%)}to{transform:translateX(101%)}}
+  .p-head{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+  .p-name{font-family:var(--font-display);font-size:17px;letter-spacing:.1em}
+  .p-card.black .p-name{color:#e3d6bc}
+  .p-card.red .p-name{color:var(--red)}
+  .p-model{font-size:11px;color:var(--ink-soft);background:var(--panel-2);
+    padding:2px 8px;border-radius:10px;border:1px solid var(--line)}
+  .p-time{margin-left:auto;font-family:var(--font-mono);font-size:12px;color:var(--ink-dim)}
+  .p-state{font-size:11px;color:var(--ink-soft);min-height:15px;margin-bottom:6px}
+  .p-think{
+    font-family:var(--font-display);font-size:15px;line-height:1.7;color:var(--ink-dim);
+    min-height:56px;border-top:1px dashed var(--line);padding-top:9px;
+  }
+  .p-think .caret{display:inline-block;width:7px;height:15px;background:var(--red);
+    vertical-align:-2px;margin-left:2px;animation:blink 1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  .log-wrap{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:10px 12px 6px;display:flex;flex-direction:column;min-height:0}
+  .log-title{font-size:12px;color:var(--ink-dim);letter-spacing:.2em;margin:2px 0 8px;display:flex;align-items:center;gap:8px}
+  .log-title .n{color:var(--ink-soft);font-family:var(--font-mono)}
+  .log-list{list-style:none;margin:0;padding:0;overflow-y:auto;min-height:0}
+  .log-list::-webkit-scrollbar{width:6px}
+  .log-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+  .log-item{display:grid;grid-template-columns:30px 1fr auto auto;gap:8px;align-items:baseline;
+    font-size:13px;padding:6px 4px;border-bottom:1px solid rgba(58,47,34,.5)}
+  .log-item:last-child{border-bottom:none}
+  .log-seq{color:var(--ink-soft);font-family:var(--font-mono);font-size:11px}
+  .log-move{font-family:var(--font-display);font-size:15px;color:var(--ink)}
+  .log-item.red .log-move{color:var(--red)}
+  .log-item.black .log-move{color:#e0d4bb}
+  .log-t{color:var(--ink-soft);font-family:var(--font-mono);font-size:11px}
+  .log-a{grid-column:2/5;color:var(--ink-soft);font-size:12px;line-height:1.5;display:none}
+  .log-item:hover .log-a{display:block}
+  .log-item.here{background:var(--panel-2)}
+
+  /* ============ 控制栏 ============ */
+  .controls{
+    display:flex;align-items:center;gap:12px;padding:12px 24px;
+    border-top:1px solid var(--line);background:var(--panel);
+  }
+  .ctl-left{display:flex;gap:8px;align-items:center}
+  .btn{
+    appearance:none;border:1px solid var(--line);background:var(--panel-2);color:var(--ink);
+    font-family:var(--font-body);font-size:13px;padding:8px 14px;border-radius:9px;
+    cursor:pointer;display:inline-flex;align-items:center;gap:7px;
+    transition:border-color .15s, background .15s, transform .05s;
+  }
+  .btn:hover{border-color:var(--ink-soft)}
+  .btn:active{transform:translateY(1px)}
+  .btn:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+  .btn.pri{background:var(--red);border-color:var(--red);color:#f6ead6;font-weight:600}
+  .btn.pri:hover{background:var(--red-dim)}
+  .btn .kbd{font-family:var(--font-mono);font-size:10px;color:var(--ink-soft)}
+  .seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .seg button{
+    appearance:none;border:none;background:transparent;color:var(--ink-dim);
+    padding:8px 11px;font-family:var(--font-mono);font-size:12px;cursor:pointer;
+  }
+  .seg button.on{background:var(--panel-2);color:var(--ink)}
+  .seg button:hover{color:var(--ink)}
+
+  .ctl-hint{margin-left:auto;font-size:11px;color:var(--ink-soft);display:flex;gap:6px;align-items:center}
+  .ctl-hint .dot-mini{width:6px;height:6px;border-radius:50%;background:var(--amber);opacity:.85}
+
+  /* 走子/盖印动效 */
+  .pc{transition:transform .3s cubic-bezier(.3,.7,.3,1)}
+  .pc.dying{animation:die .42s ease-out forwards;pointer-events:none}
+  @keyframes die{to{opacity:0;transform:scale(.2)}}
+  @keyframes stampRing{
+    0%{transform:scale(.2);opacity:.95}
+    70%{transform:scale(1.25);opacity:.7}
+    100%{transform:scale(1.5);opacity:0}
+  }
+  .stamp{pointer-events:none;transform-origin:center;transform-box:fill-box}
+  .stamp.anim{animation:stampRing .5s ease-out forwards}
+  .last-dot{pointer-events:none;opacity:.9}
+
+  @media (max-width:980px){
+    body{height:auto;overflow:auto;grid-template-rows:auto auto auto}
+    main{grid-template-columns:1fr;overflow:visible}
+    .side{overflow:visible}
+    #board{max-width:560px}
+    .controls{flex-wrap:wrap}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+  }
+</style>
+</head>
+<body>
+
+  <header class="page-header">
+    <div class="seal">弈</div>
+    <div class="brand">
+      <h1>楚河汉界</h1>
+      <p class="brand-sub">大 模 型 对 决 · 可 视 化 演 示</p>
+    </div>
+    <div class="hdr-right">
+      <div class="mini-pieces">
+        <span class="mini red">車</span><span class="mini black">将</span>
+      </div>
+      <span class="status-pill"><span class="beam"></span>演示 · 模拟数据</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="stage">
+      <div class="board-frame">
+        <svg id="board" viewBox="0 0 464 512" role="img" aria-label="中国象棋棋盘"></svg>
+        <span class="check-badge" id="checkBadge">将!</span>
+        <div class="end-banner" id="endBanner">
+          <div class="result" id="resultText">红方 <b>胜</b></div>
+          <div class="reason" id="resultReason">絶殺 · 演示棋谱</div>
+          <button class="btn" id="replayBtn">↺ 复盘重开</button>
+        </div>
+        <span class="board-corner">demo</span>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="meta-bar">
+        <span class="cell">回合 <b id="roundNum">0</b></span>
+        <span class="divider"></span>
+        <span class="cell">步数 <b id="halfNum">0</b></span>
+        <span class="divider"></span>
+        <span class="cell">用时 <b id="elapsed">0.0s</b></span>
+      </div>
+
+      <div class="p-card red" id="redCard">
+        <div class="p-head">
+          <span class="p-name">红方</span>
+          <span class="p-model">Model A · 可配</span>
+          <span class="p-time"><span id="redTime">&nbsp;</span></span>
+        </div>
+        <div class="p-state" id="redState">待机</div>
+        <div class="p-think" id="redThink"></div>
+      </div>
+
+      <div class="p-card black" id="blackCard">
+        <div class="p-head">
+          <span class="p-name">黑方</span>
+          <span class="p-model">Model B · 可配</span>
+          <span class="p-time"><span id="blackTime">&nbsp;</span></span>
+        </div>
+        <div class="p-state" id="blackState">待机</div>
+        <div class="p-think" id="blackThink"></div>
+      </div>
+
+      <div class="log-wrap">
+        <div class="log-title">对局履历 <span class="n" id="logCount">0 步</span></div>
+        <ul class="log-list" id="logList"></ul>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="controls">
+    <div class="ctl-left">
+      <button class="btn pri" id="playBtn">❚❚ 暂停</button>
+      <button class="btn" id="stepBtn">⏭ 单步<span class="kbd">S</span></button>
+      <button class="btn" id="resetBtn">↺ 重开</button>
+    </div>
+    <div class="seg" id="speedSeg">
+      <button data-s="1" class="on">1×</button>
+      <button data-s="2">2×</button>
+      <button data-s="4">4×</button>
+    </div>
+    <span class="ctl-hint"><span class="dot-mini"></span>演示棋谱 · 非正式对局 · 仅供 UI 预览</span>
+  </footer>
+
+<script>
+(() => {
+  "use strict";
+  /* ================= 棋盘绘制 ================= */
+  const CELL = 48, PAD = 40, R = 20;
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.getElementById("board");
+  const W = PAD*2 + (9-1)*CELL;       // 464
+  const H = PAD*2 + (10-1)*CELL;      // 512
+  const pos = (f, r) => ({ x: PAD + f*CELL, y: PAD + r*CELL });
+
+  function el(name, attrs, parent){
+    const e = document.createElementNS(NS, name);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+
+  function drawBoard(){
+    el("rect", { x:0, y:0, width:W, height:H, rx:8, fill:"none",
+                 stroke:"rgba(60,38,18,.55)", "stroke-width":2.5 }, svg);
+    // 横向 10 线
+    for (let r=0; r<10; r++){
+      const y = PAD + r*CELL;
+      el("line", { x1:PAD, y1:y, x2:PAD+(9-1)*CELL, y2:y,
+                   stroke:"var(--wood-line)", "stroke-width":1.3 }, svg);
+    }
+    // 竖向 9 线,中央(第4线)过河断开
+    for (let f=0; f<9; f++){
+      const x = PAD + f*CELL;
+      if (f === 4){
+        el("line", { x1:x, y1:PAD, x2:x, y2:PAD+4*CELL, stroke:"var(--wood-line)", "stroke-width":1.3 }, svg);
+        el("line", { x1:x, y1:PAD+5*CELL, x2:x, y2:PAD+9*CELL, stroke:"var(--wood-line)", "stroke-width":1.3 }, svg);
+      } else {
+        el("line", { x1:x, y1:PAD, x2:x, y2:PAD+9*CELL, stroke:"var(--wood-line)", "stroke-width":1.3 }, svg);
+      }
+    }
+    // 九宫斜线
+    const slashes = [[0,0, 2,2, 0,2, 2,0], [9-3,0, 9-1,2, 9-3,2, 9-1,0]];
+    for (const [f1,r1,f2,r2,f3,r3,f4,r4] of slashes){
+      const a=pos(f1,r1), b=pos(f2,r2), c=pos(f3,r3), d=pos(f4,r4);
+      el("line",{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:"var(--wood-line)","stroke-width":1.3},svg);
+      el("line",{x1:c.x,y1:c.y,x2:d.x,y2:d.y,stroke:"var(--wood-line)","stroke-width":1.3},svg);
+    }
+    // 楚河 汉界(竖排)
+    const river = (chars, x) => {
+      const y0 = PAD + 4*CELL + 14;
+      for (let i=0;i<chars.length;i++){
+        const t = el("text", { x:x, y:y0 + i*(CELL-18), "text-anchor":"middle",
+          fill:"var(--wood-ink)", "font-size":21, "font-family":"var(--font-display)", opacity:.62 }, svg);
+        t.textContent = chars[i];
+      }
+    };
+    river("楚河", PAD + 2*CELL);
+    river("漢界", PAD + 6*CELL);
+  }
+
+  /* ================= 棋子 ================= */
+  const GLYPH = { red:{車:"車",馬:"馬",相:"相",仕:"仕",帥:"帥",兵:"兵",炮:"炮"},
+                  black:{車:"車",馬:"馬",象:"象",士:"士",將:"將",卒:"卒",炮:"炮"} };
+  const INIT = [
+    // 红方(底部)
+    ["red","車",0,9],["red","馬",1,9],["red","相",2,9],["red","仕",3,9],["red","帥",4,9],
+    ["red","仕",5,9],["red","相",6,9],["red","馬",7,9],["red","車",8,9],
+    ["red","炮",1,7],["red","炮",7,7],
+    ["red","兵",0,6],["red","兵",2,6],["red","兵",4,6],["red","兵",6,6],["red","兵",8,6],
+    // 黑方(顶部)
+    ["black","車",0,0],["black","馬",1,0],["black","象",2,0],["black","士",3,0],["black","將",4,0],
+    ["black","士",5,0],["black","象",6,0],["black","馬",7,0],["black","車",8,0],
+    ["black","炮",1,2],["black","炮",7,2],
+    ["black","卒",0,3],["black","卒",2,3],["black","卒",4,3],["black","卒",6,3],["black","卒",8,3],
+  ];
+
+  let pieces = [];
+  function buildPieces(){
+    pieces = INIT.map(([side,type,f,r]) => {
+      const g = el("g", { "class":"pc "+side }, svg);
+      g.style.transform = `translate(${pos(f,r).x}px, ${pos(f,r).y}px)`;
+      el("circle", { r:R, fill:"#f4e3c4",
+        stroke: side==="red" ? "#8f4633" : "#20201d",
+        "stroke-width":2, "filter":"url(#ps)" }, g);
+      el("circle", { r:R-4, fill:"none",
+        stroke: side==="red" ? "rgba(143,70,51,.55)" : "rgba(32,32,29,.5)",
+        "stroke-width":1 }, g);
+      const t = el("text", { y:8, "text-anchor":"middle", "font-size":27,
+        "font-family":"var(--font-display)",
+        fill: side==="red" ? "#a53a26" : "#26221f", "font-weight":600 }, g);
+      t.textContent = GLYPH[side][type];
+      g.setAttribute("data-f", f); g.setAttribute("data-r", r);
+      return { side, type, f, r, el:g };
+    });
+  }
+
+  // 落下阴影滤镜
+  const defs = el("defs", {}, svg);
+  const filter = el("filter", { id:"ps", x:"-30%", y:"-30%", width:"160%", height:"160%" }, defs);
+  el("feDropShadow", { dx:0, dy:1.6, "stdDeviation":1.4, "flood-color":"#000", "flood-opacity":.35 }, filter);
+
+  /* ================= 模拟棋谱 ================= */
+  const MOVES = [
+    { side:"red",  from:[7,7], to:[4,7], note:"炮二平五" },
+    { side:"black",from:[7,2], to:[4,2], note:"炮8平5" },
+    { side:"red",  from:[7,9], to:[6,7], note:"马二进三" },
+    { side:"black",from:[7,0], to:[6,2], note:"马8进7" },
+    { side:"red",  from:[8,9], to:[7,9], note:"车一平二" },
+    { side:"black",from:[0,0], to:[1,0], note:"车9平8" },
+    { side:"red",  from:[7,9], to:[7,3], note:"车二进六" },
+    { side:"black",from:[1,0], to:[1,1], note:"车8进1" },
+    { side:"red",  from:[7,3], to:[6,3], note:"车二平三 · 吃卒" , cap:true },
+    { side:"black",from:[4,2], to:[3,2], note:"炮5平4" },
+    { side:"red",  from:[4,7], to:[4,3], note:"炮五进四 · 打卒", cap:true },
+    { side:"black",from:[2,2], to:[3,4], note:"马7进5" },
+    { side:"red",  from:[1,9], to:[2,7], note:"马八进七" },
+    { side:"black",from:[7,2], to:[7,4], note:"炮8进2" },
+    { side:"red",  from:[0,9], to:[1,9], note:"车九平八" },
+    { side:"black",from:[1,1], to:[1,4], note:"车8进3" },
+    { side:"red",  from:[4,6], to:[4,5], note:"兵五进一" },
+    { side:"black",from:[8,0], to:[8,2], note:"车1进2" },
+    { side:"red",  from:[4,5], to:[4,4], note:"兵五进一" },
+    { side:"black",from:[1,4], to:[4,4], note:"车8平5 · 吃兵", cap:true },
+    { side:"red",  from:[1,7], to:[1,3], note:"炮八进四" },
+    { side:"black",from:[2,3], to:[2,2], note:"卒7进1" },
+    { side:"red",  from:[6,3], to:[6,0], note:"车三进一", check:true },
+    { side:"black",from:[4,0], to:[3,0], note:"将5平4" },
+    { side:"red",  from:[6,0], to:[3,0], note:"绝杀 · 将死", final:true, cap:true },
+  ];
+
+  const ANALYSIS = [
+    "中炮开局,先声夺人,意在直捣中路。",
+    "黑方还以顺手炮,针锋相对,形同水火。",
+    "出直车占肋,控制河界兵线。",
+    "车下二路,压住对方左翼马炮。",
+    "拦卒压马,顺势提车,河口战事白热化。",
+    "中兵挺进,弃兵争先,炮路豁然开朗。",
+    "解开车链平车吃兵,中路兑子再起波澜。",
+    "沉底一将,直指九宫,胜负只在呼吸之间。",
+    "将星避走,然而已是困兽犹斗。",
+    "双车环环相扣,步步紧逼,绝杀已成定局。",
+  ];
+
+  /* ================= 交互状态 ================= */
+  const state = { i:0, playing:true, speed:1 };
+  const $ = id => document.getElementById(id);
+  const cardEls = {
+    red:{ card:$("redCard"), state:$("redState"), think:$("redThink"), time:$("redTime") },
+    black:{ card:$("blackCard"), state:$("blackState"), think:$("blackThink"), time:$("blackTime") },
+  };
+  const cumTime = { red:0, black:0 };
+
+  let timers = [];
+  const later = (fn, ms) => { const t = setTimeout(()=>{ timers.splice(timers.indexOf(t),1); fn(); }, ms / state.speed); timers.push(t); };
+  function clearTimers(){ timers.forEach(clearTimeout); timers = []; }
+
+  /* ================= 走子逻辑 ================= */
+  function movePiece(piece, to){
+    piece.f = to[0]; piece.r = to[1];
+    const p = pos(piece.f, piece.r);
+    piece.el.style.transform = `translate(${p.x}px, ${p.y}px)`;
+  }
+
+  function stampAt(f, r){
+    const p = pos(f, r);
+    const c = el("circle", { class:"stamp anim", cx:p.x, cy:p.y, r:R+3, fill:"none",
+      stroke:"rgba(176,58,38,.85)", "stroke-width":2.2 }, svg);
+    later(() => c.remove(), 500);
+  }
+  function lastDotAt(f, r){
+    document.querySelectorAll(".last-dot").forEach(e => e.remove());
+    const p = pos(f, r);
+    el("circle", { class:"last-dot", cx:p.x, cy:p.y, r:4.5, fill:"#ffd57a" }, svg);
+  }
+  function removePiece(piece){
+    const ghost = piece.el;
+    ghost.classList.add("dying");
+    later(()=>{ try{ svg.removeChild(ghost); }catch(e){} }, 430/state.speed);
+  }
+  function applyMove(m){
+    const from = pieces.find(p => p.f===m.from[0] && p.r===m.from[1]);
+    const target = pieces.find(p => p.f===m.to[0] && p.r===m.to[1]);
+    if (target && !(m.final && target.type==="將")) removePiece(target); // 将被"吃"时不消失,留给横幅
+    movePiece(from, m.to);
+    stampAt(m.to[0], m.to[1]);
+    lastDotAt(m.to[0], m.to[1]);
+    if (m.check){ $("checkBadge").classList.add("show"); later(()=>{ $("checkBadge").classList.remove("show"); }, 950); }
+  }
+
+  /* ================= 思考流演示 ================= */
+  function setThinking(side){
+    const e = cardEls[side];
+    e.card.classList.add("busy","active");
+    e.state.textContent = "思考中 · 评估着法 …";
+    e.think.textContent = "";
+    const other = side==="red" ? "black" : "red";
+    cardEls[other].card.classList.remove("busy","active");
+    cardEls[other].state.textContent = "等待对方 …";
+  }
+
+  function streamAnalysis(side, text, done){
+    const box = cardEls[side].think;
+    box.textContent = "";
+    let i = 0;
+    const thb = document.createElement('span'); thb.className="caret";
+    box.appendChild(thb);
+    const tick = () => {
+      if (!state.playing){ return; }
+      if (i < text.length){
+        thb.insertAdjacentText('beforebegin', text[i++]);
+        later(tick, 26);
+      } else {
+        thb.remove();
+        done();
+      }
+    };
+    tick();
+  }
+
+  let analysisIdx = 0;
+  function pickAnalysis(){ const a = ANALYSIS[analysisIdx % ANALYSIS.length]; analysisIdx++; return a; }
+
+  function roundDur(){ return 800 + Math.random()*500; }
+
+  /* ================= 回合推进 ================= */
+  function nextHalf(){
+    if (!state.playing) return;
+    if (state.i >= MOVES.length){
+      endGame(); return;
+    }
+    const m = MOVES[state.i];
+    setThinking(m.side);
+    const dur = roundDur();
+    later(() => {
+      if (!state.playing) return;
+      const a = pickAnalysis();
+      cardEls[m.side].state.textContent = `用时 ${(dur/1000).toFixed(1)}s`;
+      cumTime[m.side] += dur;
+      const total = (cumTime[m.side]/1000).toFixed(1);
+      cardEls[m.side].time.textContent = total + "s";
+      streamAnalysis(m.side, a, () => {
+        if (!state.playing) return;
+        applyMove(m);
+        logStep(m, a, dur);
+        state.i++;
+        $("halfNum").textContent = state.i;
+        $("roundNum").textContent = Math.ceil(state.i/2);
+        $("elapsed").textContent = (((cumTime.red+cumTime.black)/1000).toFixed(1)) + "s";
+        const last = document.querySelectorAll(".log-item");
+        if (last.length){ last[last.length-1].classList.add("here"); last.forEach((x,i)=> i<last.length-1 && x.classList.remove("here")); }
+        cardEls[m.side].card.classList.remove("busy");
+        if (m.final){ endGame(m); return; }
+        later(nextHalf, 220);
+      });
+    }, dur);
+  }
+
+  function logStep(m, analysis, dur){
+    const li = document.createElement("li");
+    li.className = "log-item " + m.side;
+    const seq = document.createElement("span"); seq.className="log-seq"; seq.textContent = state.i+1;
+    const mv = document.createElement("span"); mv.className="log-move"; mv.textContent = m.note;
+    const t = document.createElement("span"); t.className="log-t"; t.textContent = (dur/1000).toFixed(1)+"s";
+    const a = document.createElement("span"); a.className="log-a"; a.textContent = "思考: " + analysis;
+    li.append(seq, mv, t, a);
+    $("logList").appendChild(li);
+    $("logCount").textContent = (state.i+1) + " 步";
+    $("logList").scrollTop = $("logList").scrollHeight;
+  }
+
+  function endGame(m){
+    state.playing = false;
+    $("playBtn").textContent = "▶ 开始";
+    const b = $("endBanner");
+    b.classList.add("show");
+    $("resultReason").textContent = (m && m.note ? m.note + " · 演示棋谱" : "演示棋谱");
+    cardEls.red.card.classList.remove("busy","active");
+    cardEls.black.card.classList.remove("busy","active");
+    cardEls.red.state.textContent = "对局结束"; cardEls.black.state.textContent = "对局结束";
+  }
+
+  /* ================= 控制 ================= */
+  function reset(){
+    clearTimers();
+    state.i = 0; state.playing = true; state.busy = false; analysisIdx = 0;
+    cumTime.red = 0; cumTime.black = 0;
+    document.querySelectorAll("#board .pc,#board .stamp,#board .last-dot,.check-badge.show").forEach(n => n.remove());
+    document.querySelectorAll(".log-item").forEach(n => n.remove());
+    $("logCount").textContent = "0 步";
+    $("roundNum").textContent = 0; $("halfNum").textContent = 0; $("elapsed").textContent = "0.0s";
+    $("endBanner").classList.remove("show");
+    cardEls.red.time.textContent = "—"; cardEls.black.time.textContent = "—";
+    cardEls.red.state.textContent = "就绪"; cardEls.black.state.textContent = "就绪";
+    buildPieces();
+    $("playBtn").textContent = "❚❚ 暂停";
+    nextHalf();
+  }
+
+  $("playBtn").addEventListener("click", () => {
+    state.playing = !state.playing;
+    $("playBtn").textContent = state.playing ? "❚❚ 暂停" : "▶ 继续";
+    if (state.playing && state.i < MOVES.length) {
+      // 恢复推进:清残留计时器,从当前步重走
+      clearTimers();
+      nextHalf();
+    }
+  });
+
+  $("stepBtn").addEventListener("click", () => {
+    if (state.playing){ state.playing = false; $("playBtn").textContent = "▶ 继续"; }
+    clearTimers();
+    setThinking(MOVES[state.i].side);   // placeholder
+    // 直接执行一步(跳过思考流时间,便于教学)
+    const m = MOVES[state.i];
+    const a = pickAnalysis();
+    applyMove(m);
+    logStep(m, a, 0);
+    state.i++;
+    $("halfNum").textContent = state.i;
+    $("roundNum").textContent = Math.ceil(state.i/2);
+    if (m.final){ endGame(m); return; }
+  });
+
+  $("resetBtn").addEventListener("click", reset);
+  $("replayBtn").addEventListener("click", reset);
+  document.querySelectorAll("#speedSeg button").forEach(b => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll("#speedSeg button").forEach(x=>x.classList.remove("on"));
+      b.classList.add("on");
+      state.speed = Number(b.dataset.s);
+    });
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === " "){ e.preventDefault(); $("playBtn").click(); }
+    else if (e.key === "s" || e.key === "S"){ $("stepBtn").click(); }
+  });
+
+  /* ================= 启动 ================= */
+  drawBoard();
+  buildPieces();
+  nextHalf();
+})();
+</script>
+</body>
+</html>
