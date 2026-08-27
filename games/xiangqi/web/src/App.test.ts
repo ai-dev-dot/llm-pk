@@ -1,7 +1,7 @@
 //
-// App 端到端冒烟(Task 19 手工验收的自动化形态):
-// 提交新局表单 → createGame(fetch stub)→ 进入 GameView → WS(fake WebSocket)
-// 推 begin/move 帧 → 棋盘/记谱/成本联动;再演练 pause/resume/step 交接。
+// App 端到端冒烟(T20 首页列表化后的自动化形态):
+// 首页列表 →「开始对局」(fetch stub:POST 空配置)→ 进入 GameView → WS(fake WebSocket)
+// 推 begin/move 帧 → 棋盘/记谱/成本联动;再演练 pause/resume/step 交接;深链/回放导航。
 //
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
@@ -27,6 +27,18 @@ class FakeWs {
 
 const frame = (seq: number, event: unknown) => JSON.stringify({ seq, event });
 
+/** 通用 fetch stub:首页列表 / POST 建局 / replay / 详情兜底。 */
+function stubFetch(opts: { logGames?: unknown[] } = {}) {
+  return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    const method = init?.method ?? 'GET';
+    if (u === '/api/logs') return new Response(JSON.stringify({ games: opts.logGames ?? [] }), { status: 200 });
+    if (u === '/api/games' && method === 'POST') return new Response(JSON.stringify({ id: 'g-smoke' }), { status: 201 });
+    if (u.endsWith('/replay')) return new Response(JSON.stringify({ id: 'g-smoke', events: [] }), { status: 200 });
+    return new Response(JSON.stringify({ id: 'g-smoke', status: 'paused', moveCount: 1 }), { status: 200 });
+  });
+}
+
 afterEach(() => {
   wsInstances.length = 0;
   window.location.hash = '';
@@ -34,35 +46,33 @@ afterEach(() => {
 });
 
 describe('App 全流程冒烟', () => {
-  it('建局→WS 事件→棋盘/记谱/成本渲染;pause/resume/step 发 REST', async () => {
+  it('首页点「开始对局」→ 建局(POST 空配置)→ WS 事件 → 棋盘/记谱/成本渲染;pause/resume/step 发 REST', async () => {
     vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
     const restCalls: string[] = [];
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
         const u = String(url);
-        if (u === '/api/games') return new Response(JSON.stringify({ id: 'g-smoke' }), { status: 201 });
+        const method = init?.method ?? 'GET';
+        if (u === '/api/logs') return new Response(JSON.stringify({ games: [] }), { status: 200 });
+        if (u === '/api/games' && method === 'POST') {
+          // 断言请求体为空配置(红/黑不落屏,服务端回落 config.json)
+          expect(JSON.parse(String(init?.body)).red.model).toBe('');
+          return new Response(JSON.stringify({ id: 'g-smoke' }), { status: 201 });
+        }
+        if (u.endsWith('/replay')) return new Response(JSON.stringify({ id: 'g-smoke', events: [] }), { status: 200 });
         restCalls.push(u);
         return new Response(JSON.stringify({ id: 'g-smoke', status: 'paused', moveCount: 1 }), { status: 200 });
       }),
     );
 
     const w = mount(App);
-    // 初始为表单
-    expect(w.find('form[data-testid="new-game-form"]').exists()).toBe(true);
+    // 初始为首页对局列表
+    expect(w.find('[data-testid="home-view"]').exists()).toBe(true);
 
-    // 填表并提交
-    const red = w.get('fieldset[data-side="red"]');
-    const black = w.get('fieldset[data-side="black"]');
-    for (const fs of [red, black]) {
-      fs.find('input[type="url"]').setValue('https://api.anthropic.com/v1');
-      fs.find('input[type="password"]').setValue('k');
-      fs.find('input[type="text"]').setValue('m');
-    }
-    await w.get('form').trigger('submit');
+    // 「开始对局」→ 用服务器默认配置建局,进入对局页,WS 已按 since=0 订阅
+    await w.get('[data-testid="start-game"]').trigger('click');
     await flushPromises();
-
-    // 进入对局页,WS 已按 since=0 订阅
     expect(w.find('[data-testid="controls"]').exists()).toBe(true);
     expect(wsInstances).toHaveLength(1);
     expect(wsInstances[0]!.url).toContain('/ws/games/g-smoke?since=0');
@@ -126,8 +136,8 @@ describe('App 深链观战(hash 路由)', () => {
     const w = mount(App);
     await flushPromises();
 
-    // 不经表单直达对局页,WS 订阅深链局
-    expect(w.find('form[data-testid="new-game-form"]').exists()).toBe(false);
+    // 不经首页直达对局页(无首页、无表单),WS 订阅深链局
+    expect(w.find('[data-testid="home-view"]').exists()).toBe(false);
     expect(w.find('[data-testid="controls"]').exists()).toBe(true);
     expect(wsInstances).toHaveLength(1);
     expect(wsInstances[0]!.url).toContain('/ws/games/g-deep?since=0');
@@ -141,16 +151,17 @@ describe('App 深链观战(hash 路由)', () => {
     w.unmount();
   });
 
-  it('无 hash 落回开新局表单', () => {
+  it('无 hash 落回首页对局列表', () => {
     window.location.hash = '#/';
+    vi.stubGlobal('fetch', stubFetch());
     const w = mount(App);
-    expect(w.find('form[data-testid="new-game-form"]').exists()).toBe(true);
+    expect(w.find('[data-testid="home-view"]').exists()).toBe(true);
     w.unmount();
   });
 });
 
 describe('App 回放导航', () => {
-  it('对局页点「回放」→ Replay 视图挂载并读 replay API;退出回放回表单', async () => {
+  it('对局页点「回放」→ Replay 视图挂载并读 replay API;退出回放回首页列表', async () => {
     vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
     const calls: string[] = [];
     vi.stubGlobal(
@@ -158,21 +169,15 @@ describe('App 回放导航', () => {
       vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
         const u = String(url);
         calls.push(u);
+        if (u === '/api/logs') return new Response(JSON.stringify({ games: [] }), { status: 200 });
+        if (u === '/api/games' && (init?.method ?? 'GET') === 'POST') return new Response(JSON.stringify({ id: 'g-smoke' }), { status: 201 });
         if (u.endsWith('/replay')) return new Response(JSON.stringify({ id: 'g-smoke', events: [] }), { status: 200 });
-        if (u === '/api/games') return new Response(JSON.stringify({ id: 'g-smoke' }), { status: 201 });
         return new Response(JSON.stringify({ id: 'g-smoke', status: 'paused', moveCount: 1 }), { status: 200 });
       }),
     );
 
     const w = mount(App);
-    const red = w.get('fieldset[data-side="red"]');
-    const black = w.get('fieldset[data-side="black"]');
-    for (const fs of [red, black]) {
-      fs.find('input[type="url"]').setValue('https://api.anthropic.com/v1');
-      fs.find('input[type="password"]').setValue('k');
-      fs.find('input[type="text"]').setValue('m');
-    }
-    await w.get('form').trigger('submit');
+    await w.get('[data-testid="start-game"]').trigger('click');
     await flushPromises();
     expect(w.find('[data-testid="controls"]').exists()).toBe(true);
 
@@ -183,7 +188,7 @@ describe('App 回放导航', () => {
 
     await w.get('[data-testid="replay-exit"]').trigger('click');
     await flushPromises();
-    expect(w.find('form[data-testid="new-game-form"]').exists()).toBe(true);
+    expect(w.find('[data-testid="home-view"]').exists()).toBe(true);
 
     w.unmount();
   });

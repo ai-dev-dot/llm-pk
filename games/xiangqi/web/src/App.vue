@@ -1,32 +1,28 @@
 <script setup lang="ts">
 //
-// App —— 根组装(Task 19):新局表单 ⇄ 实时对局页。
+// App —— 根组装:首页对局列表(home)#/ ⇄ 实时对局页(g)#/g/<id> ⇄ 回放(r)#/r/<id>。
 // 对局页生命周期由 <GameView :key> 承载(切 id 即重挂,useGame 随之重建订阅);
-// 「重开」= 用上次配置再 create 一局(新 id 重新订阅),后端起新 Arena。
+// 「重开」= 用服务器 config.json 默认模型再 create 一局(空配置 POST 回落)。
+// 红/黑模型配置不再于页面填写——编辑服务端 config.json 后重启即生效。
 //
 import { onBeforeUnmount, ref, watch } from 'vue';
-import NewGameForm from './components/NewGameForm.vue';
 import GameView from './components/GameView.vue';
 import Replay from './views/Replay.vue';
+import Home from './views/Home.vue';
 import { createGame, type NewGameConfig } from './composables/useGame';
 
 type Route =
-  | { kind: 'form' }
-  | { kind: 'game'; id: string; config?: NewGameConfig }
+  | { kind: 'home' }
+  | { kind: 'game'; id: string }
   | { kind: 'replay'; id: string };
 
-// 深链(hash 路由):#/g/<id> 直达实时对局、#/r/<id> 直达回放;无 hash(或 #/)为开新局表单。
+// 深链(hash 路由):#/g/<id> 直达实时对局、#/r/<id> 直达回放;无 hash(或 #/)为首页对局列表。
 // route 变更用 replaceState 写回 hash——不触发 hashchange,天然防回环;地址栏手改 hash 由 onHashChange 接管。
-const EMPTY_CONFIG: NewGameConfig = {
-  red: { baseUrl: '', apiKey: '', model: '' },
-  black: { baseUrl: '', apiKey: '', model: '' },
-};
-
 function parseHash(hash: string): Route {
   const m = /^#\/(g|r)\/(.+)$/.exec(hash);
   if (m && m[1] === 'g') return { kind: 'game', id: m[2]! };
   if (m && m[1] === 'r') return { kind: 'replay', id: m[2]! };
-  return { kind: 'form' };
+  return { kind: 'home' };
 }
 
 function toHash(r: Route): string {
@@ -46,25 +42,27 @@ if (typeof window !== 'undefined') {
   window.addEventListener('hashchange', onHashChange);
   onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange));
 }
-const submitting = ref(false);
-const formError = ref<string | null>(null);
 
-async function launch(config: NewGameConfig): Promise<void> {
-  submitting.value = true;
-  formError.value = null;
+// 「开始对局」与「重开」:均以空配置 POST → 后端回落 config.json 的 red/black use。
+const EMPTY_CONFIG: NewGameConfig = {
+  red: { baseUrl: '', apiKey: '', model: '' },
+  black: { baseUrl: '', apiKey: '', model: '' },
+};
+const creating = ref(false);
+async function createAndGo(order: 'new' | 'restart'): Promise<void> {
+  if (creating.value) return;
+  creating.value = true;
   try {
-    const { id } = await createGame(config);
-    route.value = { kind: 'game', id, config };
+    const { id } = await createGame(EMPTY_CONFIG);
+    route.value = { kind: 'game', id };
   } catch (err) {
-    formError.value = err instanceof Error ? err.message : String(err);
+    // 建局失败:留当前视图,错误由操作发起方展示/静默(重开场景退化为无操作)。
+    const msg = err instanceof Error ? err.message : String(err);
+    if (order === 'new') window.alert(`开局失败:${msg}`);
+    else console.warn('restart failed:', msg);
   } finally {
-    submitting.value = false;
+    creating.value = false;
   }
-}
-
-// 模板里仅供 game 态出现;深链进入无 config → 空配置(服务端回落 config.json 默认模型)
-function restartWithConfig(cfg?: NewGameConfig): void {
-  void launch(cfg ?? EMPTY_CONFIG);
 }
 </script>
 
@@ -79,35 +77,33 @@ function restartWithConfig(cfg?: NewGameConfig): void {
       <div v-if="route.kind === 'game'" class="hdr-right">
         <span class="status-pill"><span class="beam"></span>{{ route.id.slice(0, 8) }}</span>
         <button class="btn" data-testid="replay-nav" @click="route = { kind: 'replay', id: route.id }">回放</button>
-        <button class="btn" data-testid="new-game" @click="route = { kind: 'form' }">新局</button>
+        <button class="btn" data-testid="home-nav" @click="route = { kind: 'home' }">首页</button>
       </div>
       <div v-else-if="route.kind === 'replay'" class="hdr-right">
         <span class="status-pill"><span class="beam"></span>{{ route.id.slice(0, 8) }}</span>
-        <button class="btn" data-testid="replay-exit" @click="route = { kind: 'form' }">退出回放</button>
+        <button class="btn" data-testid="replay-exit" @click="route = { kind: 'home' }">回首页</button>
       </div>
     </header>
 
-    <NewGameForm
-      v-if="route.kind === 'form'"
-      :submitting="submitting"
-      :error="formError"
-      @submit="launch"
+    <Home
+      v-if="route.kind === 'home'"
+      @to-game="(id) => (route = { kind: 'game', id })"
+      @to-replay="(id) => (route = { kind: 'replay', id })"
     />
 
     <Replay
       v-else-if="route.kind === 'replay'"
       :key="`r-${route.id}`"
       :game-id="route.id"
-      @exit="route = { kind: 'form' }"
+      @exit="route = { kind: 'home' }"
     />
 
     <GameView
       v-else
       :key="route.id"
       :game-id="route.id"
-      :config="route.config"
-      @restart="restartWithConfig(route.config)"
-      @exit="route = { kind: 'form' }"
+      @restart="createAndGo('restart')"
+      @exit="route = { kind: 'home' }"
     />
   </div>
 </template>

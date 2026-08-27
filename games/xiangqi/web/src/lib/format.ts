@@ -22,6 +22,14 @@ export function fmtRound(halfMoves: number): number {
   return Math.ceil(Math.max(halfMoves, 0) / 2);
 }
 
+/** ISO 时间 → 本地 `MM-DD HH:mm`(对局列表展示)。 */
+export function fmtClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /**
  * 终局原因 → 中文横幅副标题。
  * 键对齐 server finish.reason(原始引擎/守卫码):checkmate/stalemate/illegal-moves/timeout/
