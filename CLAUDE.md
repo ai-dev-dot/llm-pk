@@ -26,7 +26,7 @@ npm run gif -- <gameId> | --all --width 720 --speed 2 --max-kb 512   # 动图导
 cd web
 npm run dev         # Vite (5173,代理 /api 与 /ws → 3010)
 npm run test        # 前端单测(92 项)
-npm run typecheck   # vue-tsc 严格类型检查(后端请用 npm -C games/xiangqi exec -- tsc --noEmit --skipLibCheck)
+npm run typecheck   # vue-tsc 严格类型检查(后端请用 npm -C games/xiangqi exec -- tsc -p games/xiangqi/tsconfig.json --noEmit --skipLibCheck)
 npm run build       # 产物校验(编译含 .vue)
 ```
 
