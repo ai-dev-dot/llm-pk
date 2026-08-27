@@ -4,10 +4,16 @@
 // 原则 B:红黑唯一文本差异是「角色名 / 执先执后」。
 // 原则 D:只给规则与局面,绝不提供合法走法清单;打回时只讲原因、绝不枚举正确走法。
 //
+// 棋规文本不再硬编码于此:独立文件 `server/prompts/xiangqi-rules.md`(规则卡,红黑同文),
+// 便于直接改文案/维护;本文件只负责组装 system。
+//
 // TODO(T11):renderAscii 将替换为 engine/render.ts 的官方 renderAscii(统一坐标);
 //            届时本文件只保留 buildSystemPrompt / buildUserPrompt。
 //
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Board, Side } from '../engine/board';
 import { pieceAt } from '../engine/board';
 
@@ -36,6 +42,17 @@ export function renderAscii(board: Board): string {
   return out;
 }
 
+// ---------- 棋规卡(独立文件,红黑同文;见 server/prompts/xiangqi-rules.md) ----------
+
+const RULES_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'server', 'prompts', 'xiangqi-rules.md');
+
+let rulesText: string | null = null;
+/** 惰性同步读取一次并缓存;进程内同一份(含 spike 与 server 两侧调用)。 */
+function loadRules(): string {
+  if (rulesText === null) rulesText = readFileSync(RULES_PATH, 'utf8').trim();
+  return rulesText;
+}
+
 // ---------- 系统提示词:同一份模板,仅身份差异 ----------
 export function buildSystemPrompt(side: Side): string {
   const role = side === 'red' ? '红' : '黑';
@@ -44,22 +61,10 @@ export function buildSystemPrompt(side: Side): string {
     `你是中国象棋棋手,执${role}方。`,
     order,
     '',
-    '【棋规(简)】',
-    '- 车:直线(横/竖)行走,距离不限,路线上不得有棋子阻挡;',
-    '- 马:走「日」字;若前进方向的紧邻格被占(蹩马腿)则不能跳;',
-    '- 炮:直线行走,不吃子时不可越过棋子;吃子时须且仅须越过恰好一枚棋子(炮架);',
-    '- 象/相:斜走两格(田字),象眼被占则不能走;不可过河;',
-    '- 士/仕:九宫内斜走一格;',
-    '- 将/帅:九宫内横或竖走一格(不可斜);双方将帅不得同列直接照面;',
-    '- 兵/卒:只许前进、不可后退;过河(越过楚河汉界)后方可横走;',
-    '- 禁止送将:走完后不得令己方将帅处于可被吃的位置;若已被将军,必须应将。',
-    '',
-    '【本局简化裁定】',
-    '- 同一局面重复出现 3 次判和;步数达上限判和;不做长将长捉精细裁定。',
+    loadRules(),
     '',
     '【棋盘与输出】',
-    '- 列 a~i 从左到右;行 1~10 自红方底线向黑方递增(下方为红、上方为黑);',
-    '- 走法可用中文记谱(如「炮二平五」「马八进七」)或坐标(如「h3-e3」);',
+    '- 走法可用中文记谱(如「炮二平五」「马八进七」)或坐标(如「h3-e3」);若不确定中文记谱规则(红方用中文数字列号、黑方用阿拉伯数字、进/退/平、同列同名子须加「前/后」),一律改用坐标格式--坐标绝不会因记谱写法被打回;',
     '- 请用工具提交 { analysis, move }:先给思考 analysis,再给这一步的 move;',
     '- 只提交一步棋,不要答复多余内容。',
   ].join('\n');
