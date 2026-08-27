@@ -141,3 +141,7 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# 本地工作区(SDD task workspace / gstack 数据)——不入库
+.superpowers/
+.gstack/

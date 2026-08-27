@@ -44,6 +44,7 @@ server/arena.ts(仲裁) ──appendEvent──► logs/*.jsonl ──GET /:id/r
 ```
 
 - **回放是纯重放**:服务端 `GET /:id/replay` 只回传原始事件数组;**重建为前端纯函数 `web/src/lib/replay.ts`**(`boardAt`/`applyMoveToPieces`),零 arena/模型运行时调用;`seq` 单调、`since` 断线按序补发;`useGame` 与回放共用同一 `applyMoveToPieces` ⇒ 「回放 vs 实时」双跑零偏差。
+- **日志的另一个只读下游 = 动图导出**:`scripts/gif/*` 同样消费 `logs` + `web/src/lib/replay.ts` 纯函数(`readAllEvents`→`boardAt/movesAt/modelsAt/resultAt`→canvas→GIF),与实时/回放共用同一重建算法 ⇒ 动图与观战零偏差;产物 `files/`,**只读日志、绝不写事件**。
 - **平台化 Game 接口(已落地)**:`server/game.ts` 泛型仲裁接口,象棋实现 `server/games/xiangqi-game.ts` 封印全部 engine 纯函数;`arena.ts` 只吃 `this.game.*`,新游戏接入仅新增一个实现文件、调度骨架零改。
 - **公证 = 引擎是全司法权**:`engine/`(types/board/moves/attack/judge/notation/resolver/render)全纯函数、零 IO;单一解析入口 `parseMove`/`parseResolve`;**红黑镜像测试**(同断言跑两侧)。
 - **自由出招(原则 D)**:模型只收棋盘+规则,自提中文记谱/坐标;非法/不可解析被**打回**(`engineReason` 只讲原因、绝不枚举合法走法),打回次数是测评指标(教学前/后分计)。**打回不作为即时胜负依据**:同一方**单半步(一个回合)内连续打回满 `illegalAttemptsLimit`(默认 10)次才判该方负,换方重新从 0 计,绝不跨回合累计**;满 10 次前只留痕提示(前端裁判 toast;`illegal-attempt` 事件带计数),模型可持续出招直至合法。打回解析结果按 `(cacheKey…)` 缓存,同回合只算一次。
@@ -58,7 +59,7 @@ server/arena.ts(仲裁) ──appendEvent──► logs/*.jsonl ──GET /:id/r
 
 - 定位:基于事件日志回放渲染公众号动图;产物 `files/<gameId>.gif`(+超 `--max-kb` 时 `part1..N` 多文件、首帧 `_cover.png`),`files/` 已 gitignore。
 - 运行:`npm run gif -- <gameId>` 单局;`--all` 批量(含进行中局,以当前局面收尾);`--font`/`--width`/`--speed`/`--max-kb` 可选。
-- 技术:`@napi-rs/canvas`(预编译 2D)+ `gifenc`(纯 JS 固定色板);**色板即绘制色**(禁渐变,`scripts/gif/palette.ts`);棋子字集对齐 `engine/render.ts`,reason 文案对齐全集测试(`scripts/gif/frames.test.ts`);delay 1/100s 整数倍;分片按「步块」二分、非末段「未完·续」。
+- 技术:`@napi-rs/canvas`(预编译 2D)+ `gifenc`(纯 JS 固定色板);**色板即绘制色**(禁渐变,`scripts/gif/palette.ts`);棋子字集对齐 `engine/render.ts`,reason 文案对齐全集测试(`scripts/gif/frames.test.ts`);delay **毫秒直送 gifenc**(其内部换算 1/100s,勿自行 `/10`);分片按「步块」二分、非末段「未完·续」。
 - 解析:自写带行号日志解析(`scripts/gif/events.ts`),容忍进行中 arena 半写尾行;坏行报 `文件:行号`。
 - 字体:探测 `simkai→simhei→msyh→simsun` + `--font`;缺字体/缺字形 exit 2。
 - **跨包约束**:`scripts/` 唯一允许反向依赖 `web/src/lib/replay.ts` 链路;该链路必须保持纯 TS、永不得引入 web 运行时依赖。
