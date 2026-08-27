@@ -15,6 +15,7 @@ describe('frames.buildFrames', () => {
     expect(fr.length).toBe(1 + 6 * 3 + 1); // 20
     expect(fr[0]!.mode).toBe('open');
     expect(fr[0]!.delayMs).toBe(1500);
+    expect(fr[0]!.caption.round).toBe(1); // 开局定格「第 1 回合」(spec §5/§6)
     expect(fr.at(-1)!.mode).toBe('final');
     expect(fr.at(-1)!.delayMs).toBe(2000);
     // 每步: hold(1s)+slide4(100ms)+land(1s)
@@ -51,9 +52,12 @@ describe('frames.buildFrames', () => {
     const fr = buildFrames(evs2, { speed: 1 });
     const land = fr.find((f) => f.mode === 'land')!;
     expect(land.board.some((p) => p.file === 4 && p.rank === 2)).toBe(true); // 红炮 h3(7,2)→e3(4,2)
-    // 记谱:第一步含非法 → 打回徽标计 1
+    // 记谱:第一步含非法 → 打回徽标计 1(半回合口径,本半回合内 red 第 1 次)
     expect(land.caption.rejection).toBe(1);
     expect(land.caption.cur).toBe(1);
+    expect(land.caption.round).toBeGreaterThanOrEqual(1); // 走子后回合数 ≥1
+    expect(land.caption.mover).toBe('red'); // 行棋方红
+    expect(land.caption.right.length).toBeGreaterThan(0); // 右段模型名非空
   });
 
   it('未完成局 final 横幅为「对局进行中」', () => {

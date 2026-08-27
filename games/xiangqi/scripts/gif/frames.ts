@@ -66,27 +66,34 @@ export function buildFrames(events: GameEvent[], opts: BuildOpts): Frame[] {
   const hasFinish = res !== null;
   const banner = bannerText(res?.winner, res?.reason, hasFinish);
 
-  const left = (i: number) => `${models?.red ?? '? 红'} vs ${models?.black ?? '? 黑'}`;
+  const rightOf = () => `${models?.red ?? '? 红'} vs ${models?.black ?? '? 黑'}`;
   const speed = opts.speed === 2 ? 0.5 : 1;
 
   const frames: Frame[] = [];
-  const rejectionUpTo = (seq: number) => {
-    let n = 0;
-    for (const e of events) { if (e.seq > seq) break; if (e.type === 'illegal-attempt') n++; }
-    return n;
+
+  // 半回合打回计数(口径:spec §5「该半回合含 illegal-attempt 时附 ⚠ 打回×n」):
+  // 某方合法 move 落定 → 该方计数清零(换方重新计);遇 illegal-attempt → 该方计数取其 round 字段。
+  const countersAt = (seq: number): Record<Side, number> => {
+    const c: Record<Side, number> = { red: 0, black: 0 };
+    for (const e of events) {
+      if (e.seq > seq) break;
+      if (e.type === 'move' && e.legal !== false) c[e.turn] = 0;
+      else if (e.type === 'illegal-attempt') c[e.side] = e.round;
+    }
+    return c;
   };
 
   const captionAt = (i: number, mover: Side | null, rejection: number): GalleryCaption => {
     const m = i >= 1 ? moves[i - 1]! : null;
     return {
-      round: halfMoveToRound(i),
+      round: Math.max(1, halfMoveToRound(i)), // open 定格要求「第 1 回合」(spec §5/§6);i≥1 与逐回合一致
       notation: m?.notation ?? '',
       cur: i,
       total,
       mover,
       rejection,
       left: '',
-      right: left(i),
+      right: rightOf(),
     };
   };
 
@@ -94,7 +101,7 @@ export function buildFrames(events: GameEvent[], opts: BuildOpts): Frame[] {
   frames.push({
     mode: 'open',
     board: boardAt(events, 0),
-    caption: captionAt(0, 'red', rejectionUpTo(0)),
+    caption: captionAt(0, 'red', countersAt(0)['red']),
     banner: null,
     delayMs: Math.round(1500 * speed),
   });
@@ -103,7 +110,7 @@ export function buildFrames(events: GameEvent[], opts: BuildOpts): Frame[] {
     const m = moves[i - 1]!;
     const from: Sq = m.from;
     const to: Sq = m.to;
-    const reject = rejectionUpTo(m.seq);
+    const reject = countersAt(m.seq - 1)[m.turn]; // 本半回合落定前的打回数(seq 严格递增,seq-1 = 该步之前)
     const boardBefore = boardAt(events, i === 1 ? 0 : moves[i - 2]!.seq);
     const boardAfter = boardAt(events, m.seq);
 
@@ -118,7 +125,7 @@ export function buildFrames(events: GameEvent[], opts: BuildOpts): Frame[] {
   frames.push({
     mode: 'final',
     board: boardAt(events, Number.MAX_SAFE_INTEGER),
-    caption: captionAt(total, null, rejectionUpTo(Number.MAX_SAFE_INTEGER)),
+    caption: captionAt(total, null, 0), // 终局无进行中的半回合,打回徽标归零
     banner,
     delayMs: Math.round(2000 * speed),
   });
