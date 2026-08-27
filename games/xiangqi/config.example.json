@@ -14,6 +14,6 @@
   "red": { "use": "glm46" },
   "black": { "use": "kimi" },
   "review": { "use": "glm46" },
-  "steps": 40,
-  "timeout_ms": 120000
+  "steps": 100,
+  "timeout_ms": 300000
 }
