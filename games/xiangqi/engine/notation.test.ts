@@ -229,6 +229,34 @@ describe('非法/未识别', () => {
     expect(failReason('', b, 'red')).toBe('PARSER_INVALID');
   });
 });
+
+/* ---------- 夹带坐标容错:模型「中文记谱 + 括号坐标」双保险写法 ---------- */
+
+describe('夹带坐标容错(中文记谱后附带坐标)', () => {
+  const b = initialBoard();
+  it('「炮二平五 (h3-e3)」→ 提取坐标 h3→e3(不再误判 PARSER_INVALID)', () => {
+    const m = okMove('炮二平五 (h3-e3)', b, 'red');
+    expect(m.from).toEqual({ file: 7, rank: 2 });
+    expect(m.to).toEqual({ file: 4, rank: 2 });
+  });
+  it('无空格括号「炮二平五(h3-e3)」同样可解析', () => {
+    const m = okMove('炮二平五(h3-e3)', b, 'red');
+    expect(m.to).toEqual({ file: 4, rank: 2 });
+  });
+  it('坐标在前、中文在后「h3-e3(炮二平五)」→ 提取坐标', () => {
+    const m = okMove('h3-e3（炮二平五）', b, 'red');
+    expect(m.from).toEqual({ file: 7, rank: 2 });
+    expect(m.to).toEqual({ file: 4, rank: 2 });
+  });
+  it('说明文字中夹带坐标「我走 h3-e3 架中炮」→ 提取坐标', () => {
+    okParse('我走 h3-e3 架中炮', b, 'red');
+  });
+  it('防护:夹带坐标起点是对方棋子 → 仍拒绝(不误提取为合法走法)', () => {
+    // a10 是黑车(黑方棋子),红方不可走;不得因夹带坐标而误判
+    expect(failReason('红方走 a10-b10 试试', b, 'red')).toBeTruthy();
+  });
+});
+
 /* ---------- moveToChinese:中文记谱生成(红/黑、进/退/平、同线前/后) ---------- */
 
 describe('moveToChinese 中文记谱生成', () => {

@@ -191,10 +191,18 @@ function parseChinese(s: string, board: Board, side: Side): ParseResult {
  * 不做 legalMoves 校验(与 parseMove 的区别在后者追加 validateMove)。
  * 供 resolver/打回诊断复用:解析层一次,合法性矩阵按回合缓存,避免重复计算。
  */
+/**
+ * 夹带在中文记谱/说明文字中的坐标子串(归一化后连写)。
+ * 模型常给出「炮二平五 (h3-e3)」这类双保险写法,归一化后为「炮二平五h3e3」;
+ * 坐标无歧义,提取出来仍过 pieceAt/合法性校验,误提取会被拒,不会产生错误走法。
+ */
+const COORD_EXTRACT_RE = /([a-i])(10|[1-9])([a-i])(10|[1-9])/;
+
 export function parseMoveRaw(text: string, board: Board, side: Side): ParseResult {
   const s = normalize(text);
   if (s.length === 0) return { ok: false, reason: 'PARSER_INVALID' };
 
+  // 1) 整串就是坐标(h3-e3 / h3e3)
   const c = COORD_RE.exec(s);
   if (c) {
     const move: Move = {
@@ -205,7 +213,24 @@ export function parseMoveRaw(text: string, board: Board, side: Side): ParseResul
     if (!p || p.side !== side) return { ok: false, reason: 'PIECE_NOT_FOUND' };
     return { ok: true, move };
   }
-  return parseChinese(s, board, side);
+
+  // 2) 中文记谱(整串)
+  const cn = parseChinese(s, board, side);
+  if (cn.ok) return cn;
+
+  // 3) 容错:中文/说明中夹带坐标(如「炮二平五(h3-e3)」)→ 提取坐标子串
+  const m = COORD_EXTRACT_RE.exec(s);
+  if (m) {
+    const move: Move = {
+      from: { file: m[1]!.charCodeAt(0) - 97, rank: Number(m[2]) - 1 },
+      to: { file: m[3]!.charCodeAt(0) - 97, rank: Number(m[4]) - 1 },
+    };
+    const p = pieceAt(board, move.from);
+    if (!p || p.side !== side) return { ok: false, reason: 'PIECE_NOT_FOUND' };
+    return { ok: true, move };
+  }
+
+  return cn;
 }
 
 /**
