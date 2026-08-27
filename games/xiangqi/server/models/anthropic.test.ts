@@ -376,6 +376,46 @@ describe('AnthropicPlayer 非流式(G3b)', () => {
   });
 });
 
+/* ---------- G3c:max_tokens 截断检测与带提示重发 ---------- */
+
+describe('AnthropicPlayer 截断重试(G3c)', () => {
+  function truncatedJson(): string {
+    return JSON.stringify({ stop_reason: 'max_tokens', content: [] });
+  }
+  function okJson(): string {
+    return JSON.stringify({
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', input: { analysis: '精简', move: 'h3-e3' } }],
+      usage: { input_tokens: 5, output_tokens: 3 },
+    });
+  }
+
+  it('截断:非流式 stop_reason=max_tokens 且无 tool_use → 带截断提示自动重发一次;第二次正常返回', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(truncatedJson(), { status: 200 }))
+      .mockResolvedValueOnce(new Response(okJson(), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    const c = await p.pickMove(fakeCtx);
+    expect(c.move).toBe('h3-e3');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, init2] = fetchMock.mock.calls[1] as [string, RequestInit];
+    const body2 = JSON.parse(init2.body as string);
+    const last = body2.messages[body2.messages.length - 1];
+    expect(last.content).toContain('截断');
+  });
+
+  it('截断重发后仍 max_tokens 且无 tool_use → 返回空 move(交 arena 打回,不占网络错误)', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(truncatedJson(), { status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    const c = await p.pickMove(fakeCtx);
+    expect(c.move).toBe('');
+    expect(fetchMock).toHaveBeenCalledTimes(2); // 原始 1 次 + 截断提示重发 1 次
+  });
+});
+
 /* ---------- G3:SSE 流式(显式 stream:true + onThought 实时增量) ---------- */
 
 describe('AnthropicPlayer SSE 流式(G3)', () => {

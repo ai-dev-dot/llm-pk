@@ -95,6 +95,13 @@ const MOVE_TOOL = {
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
+/** max_tokens 截断后带提示重发的文案(G3c):告知模型因超长被截断,请精简并直接给 move。 */
+const TRUNCATED_HINT =
+  '注意:你上一次回答因超出输出长度上限(max_tokens)被截断,未能提交完整的 move。请立即精简:先直接给出 move(中文记谱或坐标),analysis 限制在一两句以内,不要再长篇推演。';
+
+/** 截断后最多带提示重发的次数(含首次共 1+MAX 次请求)。 */
+const MAX_TRUNCATE_RETRY = 1;
+
 /**
  * 组装 user 消息(原则 C/D):棋盘 + 公共历史(+中文记谱旁注)+ 己方自省 + 打回讲评。
  * 只消费 MoveContext 的公开字段,绝不读取/拼装 ctx 以外任何内容。
@@ -214,7 +221,28 @@ export class AnthropicPlayer implements Player {
     const started = Date.now();
     // 自定义 systemPrompt 优先(arena config 传入可令其生效),缺省回落同一模板。
     const system = this.systemPrompt ?? buildSystemPrompt(this.side);
-    const user = buildUserPrompt(ctx);
+    const baseUser = buildUserPrompt(ctx);
+    // 截断重试(G3c):max_tokens 截断(无完整 tool_use)→ 带 TRUNCATED_HINT 重发,最多 MAX_TRUNCATE_RETRY 次;
+    // 截断不计非法(number 错误),和机 token 超限被识别为截断而非打回。
+    for (let attempt = 0; ; attempt++) {
+      const user = attempt === 0 ? baseUser : `${baseUser}\n\n${TRUNCATED_HINT}`;
+      const parsed = await this.callOnce(system, user, ctx.onThought);
+      const elapsedMs = Date.now() - started;
+      if (parsed.usage) this.lastUsage = parsed.usage;
+      const truncated = parsed.stopReason === 'max_tokens' && parsed.move === '';
+      if (!truncated || attempt >= MAX_TRUNCATE_RETRY) {
+        return {
+          analysis: parsed.analysis,
+          move: parsed.move,
+          usage: parsed.usage ?? { promptTokens: 0, completionTokens: 0, costUsd: 0 },
+          elapsedMs,
+        };
+      }
+    }
+  }
+
+  /** 单次 Messages 请求(网络/HTTP/解析;超时与 pause 语义保持原样)。 */
+  private async callOnce(system: string, user: string, onThought?: (chunk: string) => void): Promise<ParsedBody> {
     // 思考模式(原则 E),对齐 deepseek 官方双旋钮:off → 开关 disabled(防端点默认开后门);
     // high/max → 开关 enabled + 强度 effort('high'|'max');off 不查 effort。
     // 不附 budget_tokens:显式思考预算在部分兼容端点(如 GLM)静默黑洞,预算交端点默认。
@@ -259,10 +287,7 @@ export class AnthropicPlayer implements Player {
       throw new NetworkError(`network error: ${err instanceof Error ? err.message : String(err)}`, true);
     } finally {
       // 注意:流式读取期间超时定时器仍需工作,故不能在这里 clear —— 移到读取完成后的收尾。
-      if (!this.stream) {
-        clearTimeout(timer);
-        this.ctl = null;
-      }
+      if (!this.stream) this.ctl = null;
     }
 
     if (res.status < 200 || res.status >= 300) {
@@ -278,11 +303,9 @@ export class AnthropicPlayer implements Player {
     }
 
     try {
-      const { analysis, move, usage } = this.stream
-        ? await readSseBody(res, this.tokensPerM, ctx.onThought)
+      return this.stream
+        ? await readSseBody(res, this.tokensPerM, onThought)
         : await readJsonBody(res, this.tokensPerM);
-      this.lastUsage = usage;
-      return { analysis, move, usage, elapsedMs: Date.now() - started };
     } catch (err) {
       if (err instanceof NetworkError) throw err;
       if (err instanceof Error && err.name === 'AbortError') {
@@ -313,6 +336,18 @@ interface SseFinal {
   move: string;
 }
 
+/** 解析完成的请求结果:额外带 stop_reason(截断检测用;非流式写入,流式缺省 undefined)。 */
+interface ParsedBody extends SseFinal {
+  usage: Usage;
+  stopReason?: string;
+}
+
+/** 从非流式 JSON 读 stop_reason(max_tokens = 截断标志)。 */
+function readStopReason(json: unknown): string | undefined {
+  const r = (json as { stop_reason?: unknown } | null)?.stop_reason;
+  return typeof r === 'string' && r !== '' ? r : undefined;
+}
+
 /**
  * 安全读取整个响应体为字符串(读体失败抛 NetworkError,交 arena 重试)。
  * 非 2xx 的错误正文不严谨解析,只取文本给 httpError 也许可读 message;这里统一容错。
@@ -329,7 +364,7 @@ async function consumeTextSafe(res: Response): Promise<string> {
  * 非流式路径:整段 JSON → {analysis, move}。等价于旧 pickMove 的 JSON 解析。
  * 供 stream=false 或 SSE 回退(final 无事件)使用。
  */
-async function readJsonBody(res: Response, tokensPerM: TokensPerM): Promise<SseFinal & { usage: Usage }> {
+async function readJsonBody(res: Response, tokensPerM: TokensPerM): Promise<ParsedBody> {
   const text = await consumeTextSafe(res);
   let json: unknown = null;
   try {
@@ -339,7 +374,8 @@ async function readJsonBody(res: Response, tokensPerM: TokensPerM): Promise<SseF
   }
   const { analysis, move } = extractToolUse(json);
   const usage = readUsage(json, tokensPerM);
-  return { analysis, move, usage };
+  const stopReason = readStopReason(json);
+  return { analysis, move, usage, stopReason };
 }
 
 /**
@@ -355,7 +391,7 @@ async function readSseBody(
   res: Response,
   tokensPerM: TokensPerM,
   onThought?: (chunk: string) => void,
-): Promise<SseFinal & { usage: Usage }> {
+): Promise<ParsedBody> {
   if (!res.body) return readJsonBody(res, tokensPerM);
 
   let allText = '';
@@ -433,7 +469,7 @@ async function readSseBody(
 }
 
 /** 完全没 SSE 事件时,把累积的 body 文本当普通 JSON 解析。 */
-async function readJsonBodyFallback(bodyText: string, tokensPerM: TokensPerM): Promise<SseFinal & { usage: Usage }> {
+async function readJsonBodyFallback(bodyText: string, tokensPerM: TokensPerM): Promise<ParsedBody> {
   let json: unknown = null;
   try {
     json = bodyText ? (JSON.parse(bodyText) as unknown) : null;
@@ -442,7 +478,8 @@ async function readJsonBodyFallback(bodyText: string, tokensPerM: TokensPerM): P
   }
   const { analysis, move } = extractToolUse(json);
   const usage = readUsage(json, tokensPerM);
-  return { analysis, move, usage };
+  const stopReason = readStopReason(json);
+  return { analysis, move, usage, stopReason };
 }
 
 /** SSE 事件字段提取(格式:event:\n data:{json}\n\n)。 */
@@ -494,7 +531,7 @@ function extractAnalysisPrefix(json: string): string {
  * SSE 全部读完:用累积工具 input(jsonBuf,shape `{analysis, move}`,并非完整响应)
  * 解析最终 {analysis, move};usage 从事件中单独累计。未闭合/坏 JSON → 空 move 走打回。
  */
-function finalizeSse(jsonBuf: string, usageRaw: AnthropicUsage, tokensPerM: TokensPerM): SseFinal & { usage: Usage } {
+function finalizeSse(jsonBuf: string, usageRaw: AnthropicUsage, tokensPerM: TokensPerM): ParsedBody {
   let json: unknown = null;
   try {
     json = jsonBuf ? (JSON.parse(jsonBuf) as unknown) : null;
