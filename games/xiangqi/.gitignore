@@ -5,3 +5,4 @@ scripts/spike-result.json
 
 # 对局日志(spec: logs/ 目录 gitignore)
 logs/
+files/

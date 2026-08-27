@@ -6,6 +6,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "spike:parse": "tsx scripts/spike-parse.ts",
+    "gif": "tsx scripts/gif-export.ts",
     "dev": "tsx watch server/main.ts",
     "smoke": "tsx e2e/smoke.ts"
   },
@@ -19,7 +20,9 @@
     "vitest": "^3"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.8",
     "express": "^5.2.1",
+    "gifenc": "^1.0.3",
     "supertest": "^7.2.2",
     "ws": "^8.21.3"
   }
