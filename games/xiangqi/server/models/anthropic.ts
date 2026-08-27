@@ -97,10 +97,10 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** max_tokens 截断后带提示重发的文案(G3c):告知模型因超长被截断,请精简并直接给 move。 */
 const TRUNCATED_HINT =
-  '注意:你上一次回答因超出输出长度上限(max_tokens)被截断,未能提交完整的 move。请立即精简:先直接给出 move(中文记谱或坐标),analysis 限制在一两句以内,不要再长篇推演。';
+  '注意:你上一次回复没有完成工具调用(未产出 pick_move)。请务必仍然调用 pick_move 工具提交 move(中文记谱或坐标);不要只输出普通文字、不要提前结束。若上一条是因输出超长被截断,请把 analysis 精简到一两句、先给 move 再略述。';
 
-/** 截断后最多带提示重发的次数(含首次共 1+MAX 次请求)。 */
-const MAX_TRUNCATE_RETRY = 1;
+/** 无工具响应(max_tokens 截断 / end_turn 弃用)最多带提示重发的次数(含首次共 1+MAX 次请求)。 */
+const MAX_TRUNCATE_RETRY = 2;
 
 /**
  * 组装 user 消息(原则 C/D):棋盘 + 公共历史(+中文记谱旁注)+ 己方自省 + 打回讲评。
@@ -222,15 +222,18 @@ export class AnthropicPlayer implements Player {
     // 自定义 systemPrompt 优先(arena config 传入可令其生效),缺省回落同一模板。
     const system = this.systemPrompt ?? buildSystemPrompt(this.side);
     const baseUser = buildUserPrompt(ctx);
-    // 截断重试(G3c):max_tokens 截断(无完整 tool_use)→ 带 TRUNCATED_HINT 重发,最多 MAX_TRUNCATE_RETRY 次;
-    // 截断不计非法(number 错误),和机 token 超限被识别为截断而非打回。
+    // 无工具响应重试(G3c):tool_choice 强制工具——模型主动结束但没给 move(max_tokens 截断 / end_turn 弃用)
+    // 一律视为「未产出着法」→ 带 TRUNCATED_HINT 重发,最多 MAX_TRUNCATE_RETRY 次;仍失败则交 arena 打回。
+    // 注:畸形端点响应(缺 stop_reason 等)不在此列,直接走原有"空 move → 打回"语义。
     for (let attempt = 0; ; attempt++) {
       const user = attempt === 0 ? baseUser : `${baseUser}\n\n${TRUNCATED_HINT}`;
       const parsed = await this.callOnce(system, user, ctx.onThought);
       const elapsedMs = Date.now() - started;
       if (parsed.usage) this.lastUsage = parsed.usage;
-      const truncated = parsed.stopReason === 'max_tokens' && parsed.move === '';
-      if (!truncated || attempt >= MAX_TRUNCATE_RETRY) {
+      const missingMove = parsed.move === '';
+      const retryNoTool =
+        missingMove && (parsed.stopReason === 'max_tokens' || parsed.stopReason === 'end_turn');
+      if (!retryNoTool || attempt >= MAX_TRUNCATE_RETRY) {
         return {
           analysis: parsed.analysis,
           move: parsed.move,

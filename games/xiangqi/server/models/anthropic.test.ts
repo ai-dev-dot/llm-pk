@@ -378,9 +378,10 @@ describe('AnthropicPlayer 非流式(G3b)', () => {
 
 /* ---------- G3c:max_tokens 截断检测与带提示重发 ---------- */
 
-describe('AnthropicPlayer 截断重试(G3c)', () => {
-  function truncatedJson(): string {
-    return JSON.stringify({ stop_reason: 'max_tokens', content: [] });
+describe('AnthropicPlayer 无工具响应重试(G3c)', () => {
+  /** GLM 兼容层在未产出 tool_use 时常见 stop_reason:end_turn(主动弃用)或 max_tokens(截断)。 */
+  function noToolJson(stopReason = 'end_turn'): string {
+    return JSON.stringify({ stop_reason: stopReason, content: [] });
   }
   function okJson(): string {
     return JSON.stringify({
@@ -390,10 +391,10 @@ describe('AnthropicPlayer 截断重试(G3c)', () => {
     });
   }
 
-  it('截断:非流式 stop_reason=max_tokens 且无 tool_use → 带截断提示自动重发一次;第二次正常返回', async () => {
+  it('GLM 形态:无 tool_use(哪怕 stop_reason=end_turn)→ 带提示自动重发;第二次正常返回', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce(new Response(truncatedJson(), { status: 200 }))
+      .mockResolvedValueOnce(new Response(noToolJson(), { status: 200 })) // end_turn,无工具
       .mockResolvedValueOnce(new Response(okJson(), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
@@ -403,16 +404,28 @@ describe('AnthropicPlayer 截断重试(G3c)', () => {
     const [, init2] = fetchMock.mock.calls[1] as [string, RequestInit];
     const body2 = JSON.parse(init2.body as string);
     const last = body2.messages[body2.messages.length - 1];
-    expect(last.content).toContain('截断');
+    expect(last.content).toContain('pick_move');
   });
 
-  it('截断重发后仍 max_tokens 且无 tool_use → 返回空 move(交 arena 打回,不占网络错误)', async () => {
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(truncatedJson(), { status: 200 })));
+  it('max_tokens 截断(无 tool_use)同样被判为重发', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(noToolJson('max_tokens'), { status: 200 }))
+      .mockResolvedValueOnce(new Response(okJson(), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    const c = await p.pickMove(fakeCtx);
+    expect(c.move).toBe('h3-e3');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('重发(原始+2 次)仍无 tool_use → 返回空 move(交 arena 打回,不占网络错误)', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(noToolJson(), { status: 200 })));
     vi.stubGlobal('fetch', fetchMock);
     const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
     const c = await p.pickMove(fakeCtx);
     expect(c.move).toBe('');
-    expect(fetchMock).toHaveBeenCalledTimes(2); // 原始 1 次 + 截断提示重发 1 次
+    expect(fetchMock).toHaveBeenCalledTimes(3); // 原始 1 次 + 提示重发 2 次
   });
 });
 
