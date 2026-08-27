@@ -45,7 +45,7 @@ server/arena.ts(仲裁) ──appendEvent──► logs/*.jsonl ──GET /:id/r
 - **回放是纯重放**:服务端 `GET /:id/replay` 只回传原始事件数组;**重建为前端纯函数 `web/src/lib/replay.ts`**(`boardAt`/`applyMoveToPieces`),零 arena/模型运行时调用;`seq` 单调、`since` 断线按序补发;`useGame` 与回放共用同一 `applyMoveToPieces` ⇒ 「回放 vs 实时」双跑零偏差。
 - **平台化 Game 接口(已落地)**:`server/game.ts` 泛型仲裁接口,象棋实现 `server/games/xiangqi-game.ts` 封印全部 engine 纯函数;`arena.ts` 只吃 `this.game.*`,新游戏接入仅新增一个实现文件、调度骨架零改。
 - **公证 = 引擎是全司法权**:`engine/`(types/board/moves/attack/judge/notation/resolver/render)全纯函数、零 IO;单一解析入口 `parseMove`/`parseResolve`;**红黑镜像测试**(同断言跑两侧)。
-- **自由出招(原则 D)**:模型只收棋盘+规则,自提中文记谱/坐标;非法/不可解析被**打回**(`engineReason` 只讲原因、绝不枚举合法走法),打回次数是测评指标(教学前/后分计)。**打回不作为即时胜负依据**:单半回合内打回**超过** `illegalAttemptsLimit`(默认 10)才判该方负,10 次内只留痕提示(前端裁判 toast;`illegal-attempt` 事件带计数),模型可持续出招直至合法。打回解析结果按 `(cacheKey…)` 缓存,同回合只算一次。
+- **自由出招(原则 D)**:模型只收棋盘+规则,自提中文记谱/坐标;非法/不可解析被**打回**(`engineReason` 只讲原因、绝不枚举合法走法),打回次数是测评指标(教学前/后分计)。**打回不作为即时胜负依据**:同一方**单半步(一个回合)内连续打回满 `illegalAttemptsLimit`(默认 10)次才判该方负,换方重新从 0 计,绝不跨回合累计**;满 10 次前只留痕提示(前端裁判 toast;`illegal-attempt` 事件带计数),模型可持续出招直至合法。打回解析结果按 `(cacheKey…)` 缓存,同回合只算一次。
 - **流式思考(实时)**:`AnthropicPlayer` 默认 `stream:true`(SSE 解析 `input_json_delta`,非 SSE 响应自动回退非流式);analysis 增量经 `ctx.onThought` → arena `onLive` 广播 → WS 以 `seq:0` `player-message` 帧实时推流(不落日志、不占日志 seq、不参与断线补发;重连只显示最终 analysis)。前端 `useGame` 对 `player-message` 在 seq 过滤前特判累积 `liveThoughts`。
 - **中文记谱(参照展示)**:`engine/notation.ts` 增 `moveToChinese(move,board,side)` 纯函数(红中文列号/黑阿拉伯、进退平、同线前/后);`move` 事件与历史带 `notation` 旁注,前端记谱履历优先展示。
 - **隔离(原则 C)**:`server/session.ts` 红黑各自独立会话,`selfThoughts` 回显最近 N 步(默认 6),对方 analysis 绝不出现;Arena 组装上下文时只取本方思考+公共记谱。
@@ -75,7 +75,7 @@ server/arena.ts(仲裁) ──appendEvent──► logs/*.jsonl ──GET /:id/r
 - **LLM profiles 配置**:`config.json` 用 `models: { <name>: {base_url, api_key, model, ...} }` 注册表定义任意多个可复用 LLM,`red.use`/`black.use`/`review.use` 按名引用(红黑可打不同厂商/key);请求体内联 `baseUrl/apiKey/model` 优先,表单**全空**则回落 config profile。客户端走 Anthropic Messages 协议(`/v1/messages`),国内用智谱/Kimi 的 Anthropic 兼容端点。**`max_tokens` 默认不传**(请求体省略,交端点默认;仅 profile 显式 `max_tokens` 才带)。旧扁平结构(顶层 `base_url`+`red.model`)仍兼容。解析在 `server/http.ts` 的 `resolveSide`/`resolveReview`/`resolveProfile`。
 - **分数段与事实**:`begin` 事件保留 `model` 名(评估标识,非密钥)。
 - **M0 spike 待 key**:`npm run spike:parse` 需 `config.json`(`models` profile + 红/黑 `use`,或旧扁平 `baseUrl/apiKey/model`)才跑真实解析率;无 key 时 exit 2。
-- **`finish` reason 码**是稳定字符串(`draw-repeat`/`draw-no-mating-material`/`draw-max-moves`/`draw-cost-limit`/`draw-network`/`illegal-moves`/`timeout`/`internal-error`),前端 `web/src/lib/format.ts` 与之对齐,新增 reason 需两侧同步。**`illegal-moves` = 单半回合打回超过 `illegalAttemptsLimit`(默认 10)判该方负**;`draw-network`/`timeout` 为旧语义(网络重试超限→和棋/判负)保留兼容——现网络重试超限不再收尾,改为**超时挂起 + 手动 `retry`**(见上);`internal-error` = 兜底异常。
+- **`finish` reason 码**是稳定字符串(`draw-repeat`/`draw-no-mating-material`/`draw-max-moves`/`draw-cost-limit`/`draw-network`/`illegal-moves`/`timeout`/`internal-error`),前端 `web/src/lib/format.ts` 与之对齐,新增 reason 需两侧同步。**`illegal-moves` = 单半步内打回连续满 `illegalAttemptsLimit`(默认 10)判该方负**(换方重新计数);`draw-network`/`timeout` 为旧语义(网络重试超限→和棋/判负)保留兼容——现网络重试超限不再收尾,改为**超时挂起 + 手动 `retry`**(见上);`internal-error` = 兜底异常。
 - 计划与评审工件在 `docs/superpowers/{specs,plans}/`;待办见根 `TODOS.md`(批量匹配、分享链接、一键复跑等 deferred)。
 
 ## 沟通约定
