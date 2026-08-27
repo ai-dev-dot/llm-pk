@@ -45,7 +45,7 @@ export interface AnthropicPlayerConfig {
   /** 自定义 system 提示(如 config 里 `red.systemPrompt`);缺省用同一模板 buildSystemPrompt(side)。 */
   systemPrompt?: string;
   /**
-   * 是否 SSE 流式(默认 true):边收边把 analysis 增量经 `ctx.onThought` 回传(UI 实时思考);
+   * 是否 SSE 流式(默认 false,JSON 一次性解析;GLM 等兼容端点流式+thinking 不稳,非流式才遵守 max_tokens);
    * 端点不支持流式 / 返回普通 JSON 时自动回退非流式解析,行为与原有 fetch 完全一致。
    */
   stream?: boolean;
@@ -198,8 +198,9 @@ export class AnthropicPlayer implements Player {
     this.networkRetryBaseDelayMs = cfg.networkRetryBaseDelayMs;
     this.systemPrompt = cfg.systemPrompt;
     this.thinkingMode = cfg.thinkingMode ?? 'off';
-    // G3:默认流式(SSE);异常端点/非流式 body 会自动回退,不需要用户干预。
-    this.stream = cfg.stream ?? true;
+    // G3:默认非流式(JSON 一次性返回)。GLM 等 Anthropic 兼容端点对「流式 + thinking」实现不完整
+    // (黑洞/狂流/max_tokens 不生效);非流式路径遵守总输出上限。需实时思考展示时显式 stream:true。
+    this.stream = cfg.stream ?? false;
   }
 
   /** 外部中止当前飞行请求(arena.pause 冻结回合用):置取消标志并 abort → 后续 AbortError 识别为暂停中止。 */

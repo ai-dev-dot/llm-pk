@@ -363,7 +363,20 @@ describe('网络错误', () => {
     expect((err as Error).message).toMatch(/读响应体失败/);
   });
 });
-/* ---------- G3:SSE 流式(stream:true + onThought 实时增量) ---------- */
+/* ---------- G3b:默认非流式(stream 缺省 false;JSON 响应走 readJsonBody) ---------- */
+
+describe('AnthropicPlayer 非流式(G3b)', () => {
+  it('缺省 stream=false:请求体不含 stream;JSON(非流式)响应正常解析', async () => {
+    const fn = stubFetch(toolUseResponse());
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    const c = await p.pickMove(fakeCtx);
+    expect(c.move).toBe('h3-e3');
+    const body = requestOf(fn).body;
+    expect(body.stream).toBeUndefined();
+  });
+});
+
+/* ---------- G3:SSE 流式(显式 stream:true + onThought 实时增量) ---------- */
 
 describe('AnthropicPlayer SSE 流式(G3)', () => {
   /** 拼一段 Anthropic SSE:事件行用 \n\n 分隔。 */
@@ -390,7 +403,7 @@ describe('AnthropicPlayer SSE 流式(G3)', () => {
       'fetch',
       vi.fn(async () => new Response(sseBody(), { status: 200, headers: { 'content-type': 'text/event-stream' } })),
     );
-    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', stream: true });
 
     const c = await p.pickMove(ctx);
 
@@ -419,7 +432,7 @@ describe('AnthropicPlayer SSE 流式(G3)', () => {
         ),
       ),
     );
-    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', stream: true });
     const c = await p.pickMove(ctx);
     expect(c.move).toBe('h3-e3');
     expect(c.usage).toEqual({ promptTokens: 0, completionTokens: 0, costUsd: 0 });
