@@ -12,13 +12,7 @@
 //
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  AnthropicPlayer,
-  DEFAULT_TOKENS_PER_M,
-  estimateCostUsd,
-  HIGH_THINKING_BUDGET_TOKENS,
-  MAX_THINKING_BUDGET_TOKENS,
-} from './anthropic';
+import { AnthropicPlayer, DEFAULT_TOKENS_PER_M, estimateCostUsd } from './anthropic';
 import { NetworkError, PlayerCancelled, type MoveContext } from '../arena';
 
 /* ---------- 工具 ---------- */
@@ -435,37 +429,39 @@ describe('AnthropicPlayer SSE 流式(G3)', () => {
 /* ---------- 思考模式(原则 E)显式下发 ---------- */
 
 describe('思考模式(原则 E)', () => {
-  it('off:请求体显式 thinking.type=disabled(防端点默认开启思考的后门)', async () => {
+  it('off:请求体显式 thinking.type=disabled 且不查 effort', async () => {
     const fn = stubFetch(toolUseResponse());
     const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', thinkingMode: 'off' });
     await p.pickMove(fakeCtx);
-    expect(requestOf(fn).body.thinking).toEqual({ type: 'disabled' });
+    const b = requestOf(fn).body;
+    expect(b.thinking).toEqual({ type: 'disabled' });
+    expect(b.output_config).toBeUndefined();
   });
 
   it('缺省 thinkingMode → off(显式 disabled,绝不依赖端点缺省)', async () => {
     const fn = stubFetch(toolUseResponse());
     const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
     await p.pickMove(fakeCtx);
-    expect(requestOf(fn).body.thinking).toEqual({ type: 'disabled' });
+    const b = requestOf(fn).body;
+    expect(b.thinking).toEqual({ type: 'disabled' });
+    expect(b.output_config).toBeUndefined();
   });
 
-  it('max:thinking.type=enabled 且 budget_tokens 为全局同额常量(双方一致,公平)', async () => {
+  it('max:thinking.type=enabled 且 output_config.effort=max(对齐 deepseek 官方强度)', async () => {
     const fn = stubFetch(toolUseResponse());
     const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', thinkingMode: 'max' });
     await p.pickMove(fakeCtx);
-    expect(requestOf(fn).body.thinking).toEqual({
-      type: 'enabled',
-      budget_tokens: MAX_THINKING_BUDGET_TOKENS,
-    });
+    const b = requestOf(fn).body;
+    expect(b.thinking).toEqual({ type: 'enabled' });
+    expect(b.output_config).toEqual({ effort: 'max' });
   });
 
-  it('high:thinking.type=enabled 且 budget_tokens 为适中常量(比 max 快的折中档)', async () => {
+  it('high:thinking.type=enabled 且 output_config.effort=high(对齐 deepseek 官方强度)', async () => {
     const fn = stubFetch(toolUseResponse());
     const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', thinkingMode: 'high' });
     await p.pickMove(fakeCtx);
-    expect(requestOf(fn).body.thinking).toEqual({
-      type: 'enabled',
-      budget_tokens: HIGH_THINKING_BUDGET_TOKENS,
-    });
+    const b = requestOf(fn).body;
+    expect(b.thinking).toEqual({ type: 'enabled' });
+    expect(b.output_config).toEqual({ effort: 'high' });
   });
 });

@@ -62,21 +62,20 @@ export interface AnthropicPlayerConfig {
    */
   maxTokens?: number;
   /**
-   * 思考模式(原则 E):'off' 显式传 `thinking:{type:'disabled'}`(防端点默认开启思考的后门);
-   * 'high' 传 `thinking:{type:'enabled',budget_tokens:HIGH_THINKING_BUDGET_TOKENS}`(适中预算,比 max 快);
-   * 'max' 传 `thinking:{type:'enabled',budget_tokens:MAX_THINKING_BUDGET_TOKENS}`(全局同额,保证公平)。
-   * 缺省 'off'。本设定始终显式下发,绝不依赖端点缺省。
+   * 思考模式(原则 E),对齐 deepseek 官方双旋钮:
+   * - 开关 `thinking.type`:`off` 显式传 `{type:'disabled'}`(防端点默认开启思考的后门);
+   *   `high` | `max` 传 `{type:'enabled'}`。
+   * - 强度 `output_config.effort`:`high` | `max` 下发与档位同名的值(`'high'` | `'max'`,
+   *   对齐 deepseek 官方语义);`off` 不查 effort。
+   * - **不附 budget_tokens**:部分 Anthropic 兼容端点(如 GLM open.bigmodel.cn)对显式思考
+   *   预算实现不完整、会静默黑洞,预算交由端点自身默认。
+   * 档位名(off/high/max)记录于 begin.rules.thinkingMode 供观测与对比。缺省 'off'。
+   * 本设定始终显式下发,绝不依赖端点缺省。
    */
   thinkingMode?: 'off' | 'high' | 'max';
   /** 每百万 token 单价(USD),默认 `DEFAULT_TOKENS_PER_M`。 */
   tokensPerM?: TokensPerM;
 }
-
-/** max 思考模式的全局 budget_tokens 常量(原则 E:双方同一额度,保证公平)。 */
-export const MAX_THINKING_BUDGET_TOKENS = 32_000;
-
-/** high 思考模式(适中档)的全局 budget_tokens 常量(原则 E:同额公平;比 max 快的折中档)。 */
-export const HIGH_THINKING_BUDGET_TOKENS = 8_000;
 
 /** 强制工具输出 `{ analysis, move }`。 */
 const MOVE_TOOL_NAME = 'pick_move';
@@ -215,14 +214,12 @@ export class AnthropicPlayer implements Player {
     // 自定义 systemPrompt 优先(arena config 传入可令其生效),缺省回落同一模板。
     const system = this.systemPrompt ?? buildSystemPrompt(this.side);
     const user = buildUserPrompt(ctx);
-    // 思考模式(原则 E):显式下发,绝不依赖端点缺省——off 也传 disabled,防默认开启后门。
-    // high/max 用各自全局同额 budget_tokens,保证双方考察边界完全一致。
+    // 思考模式(原则 E),对齐 deepseek 官方双旋钮:off → 开关 disabled(防端点默认开后门);
+    // high/max → 开关 enabled + 强度 effort('high'|'max');off 不查 effort。
+    // 不附 budget_tokens:显式思考预算在部分兼容端点(如 GLM)静默黑洞,预算交端点默认。
     const thinking: Record<string, unknown> =
-      this.thinkingMode === 'max'
-        ? { type: 'enabled', budget_tokens: MAX_THINKING_BUDGET_TOKENS }
-        : this.thinkingMode === 'high'
-          ? { type: 'enabled', budget_tokens: HIGH_THINKING_BUDGET_TOKENS }
-          : { type: 'disabled' };
+      this.thinkingMode === 'off' ? { type: 'disabled' } : { type: 'enabled' };
+    const thinkingEffort = this.thinkingMode === 'max' ? 'max' : this.thinkingMode === 'high' ? 'high' : undefined;
     const body = {
       model: this.model,
       // max_tokens 默认省略:交给端点自身的输出上限(适配长思考);显式配置才带上。
@@ -232,6 +229,7 @@ export class AnthropicPlayer implements Player {
       tools: [MOVE_TOOL],
       tool_choice: { type: 'tool', name: MOVE_TOOL_NAME },
       thinking,
+      ...(thinkingEffort ? { output_config: { effort: thinkingEffort } } : {}),
       ...(this.stream ? { stream: true } : {}),
     };
 
