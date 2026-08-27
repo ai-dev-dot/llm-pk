@@ -21,6 +21,7 @@ npm run test:watch  # 后端口 vitest 监视
 npm run dev         # 后端服务执行(3010,读 config.json,缺配置给提示)
 npm run smoke       # 端到端冒烟(48 断言,不触网,脚本化 Player)
 npm run spike:parse # M0 解析率基线(需 config.json 配 key,否则 exit 2)
+npm run gif -- <gameId> | --all --width 720 --speed 2 --max-kb 512   # 动图导出(scripts/gif/*,离线批处理)
 # 前端:
 cd web
 npm run dev         # Vite (5173,代理 /api 与 /ws → 3010)
@@ -52,6 +53,15 @@ server/arena.ts(仲裁) ──appendEvent──► logs/*.jsonl ──GET /:id/r
 - **守卫在 arena**:`illegalAttemptsLimit=10`(单半回合打回超限判该方负)、`drawRepeat`(默认 3)、`maxTotalMoves=200`、`maxCostPerGame`、网络退避重试——配置与 `begin.rules` 快照同一来源。**网络重试超限不终止对局**:该方转**超时挂起**(`timeout` 事件 + `arena.stuckSide`),页面显示「已超时 + 重试」,`POST /api/games/:id/retry`(仅挂起方可调)经 `arena.retrySide` 解锁并重新发起。
 - **平台化薄协议**:`Game<State,Move>` 接口(见 spec §3)——第二个游戏接入时只新增实现文件,骨架(调度/日志/回放/前端订阅)零改。
 - **复盘独立**:`server/review.ts` 用**独立凭据**(绝不借红/黑 key)读公共日志生成 `review` 事件;失败仅降级、不伤对局。
+
+## 动图导出(离线 CLI,不碰运行链路)
+
+- 定位:基于事件日志回放渲染公众号动图;产物 `files/<gameId>.gif`(+超 `--max-kb` 时 `part1..N` 多文件、首帧 `_cover.png`),`files/` 已 gitignore。
+- 运行:`npm run gif -- <gameId>` 单局;`--all` 批量(含进行中局,以当前局面收尾);`--font`/`--width`/`--speed`/`--max-kb` 可选。
+- 技术:`@napi-rs/canvas`(预编译 2D)+ `gifenc`(纯 JS 固定色板);**色板即绘制色**(禁渐变,`scripts/gif/palette.ts`);棋子字集对齐 `engine/render.ts`,reason 文案对齐全集测试(`scripts/gif/frames.test.ts`);delay 1/100s 整数倍;分片按「步块」二分、非末段「未完·续」。
+- 解析:自写带行号日志解析(`scripts/gif/events.ts`),容忍进行中 arena 半写尾行;坏行报 `文件:行号`。
+- 字体:探测 `simkai→simhei→msyh→simsun` + `--font`;缺字体/缺字形 exit 2。
+- **跨包约束**:`scripts/` 唯一允许反向依赖 `web/src/lib/replay.ts` 链路;该链路必须保持纯 TS、永不得引入 web 运行时依赖。
 
 ## 新增游戏必须满足的五个约定
 
