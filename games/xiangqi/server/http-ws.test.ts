@@ -216,6 +216,8 @@ describe('REST 建局与查询', () => {
     try {
       const { id } = await createGame(srv.server, baseBody());
       expect(typeof id).toBe('string');
+      // T19 归档友好命名:<YYYYMMDD>-<红>-pk-<黑>-<NN>
+      expect(id).toMatch(/^\d{8}-[A-Za-z0-9-]+-pk-[A-Za-z0-9-]+-\d{2,}$/);
       expect(id.length).toBeGreaterThan(0);
       // 不能二次出现密钥
       expect(JSON.stringify({ id })).not.toContain(SECRET);

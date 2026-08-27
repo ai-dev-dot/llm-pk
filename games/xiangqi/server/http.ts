@@ -15,9 +15,8 @@
 // WS 增量与 REST 回放同源。
 //
 
-import { randomUUID } from 'node:crypto';
 import http from 'node:http';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -28,6 +27,7 @@ import type { Player } from './arena';
 import { GameRegistry } from './game-registry';
 import type { GameEvent, GameLogSink, GameRulesSnapshot } from './game-log';
 import { appendEvent, readAllEvents } from './game-log';
+import { pickNextSeq, slugifySideLabel, yyyymmdd } from './game-id';
 import { AnthropicPlayer, DEFAULT_TOKENS_PER_M } from './models/anthropic';
 import type { TokensPerM } from './models/anthropic';
 import type { Side } from '../engine/types';
@@ -41,6 +41,8 @@ export interface ResolvedSide {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** 命名用 label:优先 profile 名(`use` 引用),回落模型名(T19 归档友好 id)。 */
+  label: string;
   systemPrompt?: string;
   maxTokens?: number;
   timeoutMs?: number;
@@ -175,6 +177,18 @@ const obj = <T>(v: unknown): T | undefined =>
  * 日志落盘:用 appendFileSync 保证「write 返回即已持久化」,回放/补发与实时严格同源。
  * 目录若被外部删除(如测试清理时序),写失败时重建目录重试一次,保证事件不丢。
  */
+/** 磁盘日志目录内已有文件名;目录缺失返回空(首局无档)。 */
+function listLogNames(logDir: string): string[] {
+  try {
+    return readdirSync(logDir);
+  } catch {
+    return [];
+  }
+}
+
+/** 进程内已签发序号防撞(同日志目录同前缀只涨不降,防并发开同对阵撞号)。 */
+const inFlightGameId = new Map<string, number>();
+
 function fileLogSink(filePath: string): GameLogSink {
   const dir = dirname(filePath);
   const write = (line: string) => appendFileSync(filePath, line, 'utf8');
@@ -240,7 +254,13 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     const maxCostPerGame = num(cfgBody.maxCostPerGame) ?? dflt.maxCostPerGame;
     const networkRetryBaseDelayMs = num(cfgBody.networkRetryBaseDelayMs) ?? dflt.networkRetryBaseDelayMs;
 
-    const gid = randomUUID();
+    const gid = pickNextSeq(
+      listLogNames(logDir),
+      yyyymmdd(new Date()),
+      slugifySideLabel(red.label),
+      slugifySideLabel(black.label),
+      inFlightGameId,
+    ).id;
     const logPath = join(logDir, `${gid}.jsonl`);
     const sink = fileLogSink(logPath); // 与 arena 共用同一对象,事后复盘追加在同一 seq 序列上
     const arena = registry.create({
@@ -462,6 +482,7 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
       baseUrl,
       apiKey,
       model,
+      label: useName ?? model,
       systemPrompt:
         nes(b.systemPrompt) ?? nes(b.system_prompt) ?? nes(prof?.system_prompt) ?? nes(defSide.systemPrompt),
       maxTokens:
