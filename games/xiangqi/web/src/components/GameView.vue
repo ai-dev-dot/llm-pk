@@ -124,12 +124,19 @@ let animQueue: { A: UidPiece[]; B: UidPiece[]; from: Sq; to: Sq; seq: number; tu
 let draining = false;
 let destroyed = false;
 
+// 慢放队列的「事实局面链」:由事件流逐步推进(与 useGame 的 game.board 同源),绝不依赖
+// displayBoard 的实时快照——后者在动画补间进行中可能滞后,拿它作为下一步的 A 会让
+// applyMoveToPieces 找不到 from 位子而触发兜底(在目标格生造 pawn → 观战误显示「红兵」)。
+let moveChain: UidPiece[] = initialPiecesWithUid();
+
 const raf = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()));
 const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 function enqueueMove(from: Sq, to: Sq, seq: number, turn: Side): void {
-  const A = displayBoard.value.slice();
-  const B = applyMoveToPieces(A.slice(), from, to, seq, turn);
+  // A 永远取「事实局面链」的当前态;B = 下一步真实演进;队列逐帧补间 A→B。
+  const A = moveChain.slice();
+  moveChain = applyMoveToPieces(A.slice(), from, to, seq, turn);
+  const B = moveChain.slice();
   animQueue.push({ A, B, from, to, seq, turn });
   void drainQueue();
 }
