@@ -56,7 +56,10 @@ export interface AnthropicPlayerConfig {
    * 供上层透传给 `ArenaConfig.networkRetryBaseDelayMs`;player 层不自行重试。
    */
   networkRetryBaseDelayMs?: number;
-  /** 输出 token 预算上限,默认 1024。 */
+  /**
+   * 输出 token 预算上限。**默认不传**(请求体省略 max_tokens,由端点用自身默认,
+   * 适配长思考的大模型);仅在端点强制要求时显式给出。
+   */
   maxTokens?: number;
   /** 每百万 token 单价(USD),默认 `DEFAULT_TOKENS_PER_M`。 */
   tokensPerM?: TokensPerM;
@@ -79,7 +82,6 @@ const MOVE_TOOL = {
 } as const;
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const DEFAULT_MAX_TOKENS = 1024;
 
 /**
  * 组装 user 消息(原则 C/D):棋盘 + 公共历史(+中文记谱旁注)+ 己方自省 + 打回讲评。
@@ -161,7 +163,7 @@ export class AnthropicPlayer implements Player {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
-  private readonly maxTokens: number;
+  private readonly maxTokens?: number;
   private readonly tokensPerM: TokensPerM;
   private readonly systemPrompt?: string;
   private readonly stream: boolean;
@@ -174,7 +176,7 @@ export class AnthropicPlayer implements Player {
     this.apiKey = cfg.apiKey;
     this.model = cfg.model;
     this.timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.maxTokens = cfg.maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.maxTokens = cfg.maxTokens;
     this.tokensPerM = cfg.tokensPerM ?? DEFAULT_TOKENS_PER_M;
     this.networkRetryBaseDelayMs = cfg.networkRetryBaseDelayMs;
     this.systemPrompt = cfg.systemPrompt;
@@ -189,7 +191,8 @@ export class AnthropicPlayer implements Player {
     const user = buildUserPrompt(ctx);
     const body = {
       model: this.model,
-      max_tokens: this.maxTokens,
+      // max_tokens 默认省略:交给端点自身的输出上限(适配长思考);显式配置才带上。
+      ...(this.maxTokens ? { max_tokens: this.maxTokens } : {}),
       system,
       messages: [{ role: 'user', content: user }],
       tools: [MOVE_TOOL],

@@ -54,9 +54,9 @@ describe('App 全流程冒烟', () => {
     const red = w.get('fieldset[data-side="red"]');
     const black = w.get('fieldset[data-side="black"]');
     for (const fs of [red, black]) {
-      fs.find('input[placeholder*="sk-"]').setValue('k');
-      fs.find('input[placeholder*="claude"]').setValue('m');
-      fs.find('input[placeholder*="api.anthropic"]').setValue('https://api.anthropic.com/v1');
+      fs.find('input[type="url"]').setValue('https://api.anthropic.com/v1');
+      fs.find('input[type="password"]').setValue('k');
+      fs.find('input[type="text"]').setValue('m');
     }
     await w.get('form').trigger('submit');
     await flushPromises();
@@ -123,9 +123,9 @@ describe('App 回放导航', () => {
     const red = w.get('fieldset[data-side="red"]');
     const black = w.get('fieldset[data-side="black"]');
     for (const fs of [red, black]) {
-      fs.find('input[placeholder*="sk-"]').setValue('k');
-      fs.find('input[placeholder*="claude"]').setValue('m');
-      fs.find('input[placeholder*="api.anthropic"]').setValue('https://api.anthropic.com/v1');
+      fs.find('input[type="url"]').setValue('https://api.anthropic.com/v1');
+      fs.find('input[type="password"]').setValue('k');
+      fs.find('input[type="text"]').setValue('m');
     }
     await w.get('form').trigger('submit');
     await flushPromises();

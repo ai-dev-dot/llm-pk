@@ -49,21 +49,50 @@ export interface ResolvedSide {
 
 export type PlayerFactory = (side: Side, cfg: ResolvedSide) => Player;
 
+/**
+ * 一个可复用的 LLM 配置项(config.json 的 `models` 注册表)。
+ * 红/黑/复盘按名引用(`{ "use": "<name>" }`),各自独立端点/密钥/模型,可重复引用。
+ * 字段沿用 config 的 snake_case;secret 只存在于服务端 config 与 player 构造,绝不外发/落日志。
+ */
+export interface ModelProfile {
+  base_url?: string;
+  api_key?: string;
+  model?: string;
+  system_prompt?: string;
+  max_tokens?: number;
+  timeout_ms?: number;
+  tokens_per_m?: TokensPerM;
+}
+
+/** 红/黑在 config 里的引用形态:按名引用 profile,或旧格式只给 model。 */
+export interface SideDefaults {
+  use?: string;
+  model?: string;
+  systemPrompt?: string;
+  maxTokens?: number;
+  timeoutMs?: number;
+  tokensPerM?: TokensPerM;
+}
+
 /** `config.json` 的读取形态(服务器级缺省;secret 只为补参,不落日志)。 */
 export interface ServerDefaults {
+  /** LLM 注册表:任意多个命名 profile,红/黑/复盘按 `use` 引用。 */
+  models?: Record<string, ModelProfile>;
+  /** 旧格式兼容:顶层单一端点/密钥(无 models 时回落)。 */
   base_url?: string;
   api_key?: string;
   port?: number;
   steps?: number;
   max_tokens?: number;
   timeout_ms?: number;
-  red?: { model?: string; systemPrompt?: string; maxTokens?: number; timeoutMs?: number; tokensPerM?: TokensPerM };
-  black?: { model?: string; systemPrompt?: string; maxTokens?: number; timeoutMs?: number; tokensPerM?: TokensPerM };
+  red?: SideDefaults;
+  black?: SideDefaults;
   rules?: Partial<GameRulesSnapshot>;
   maxCostPerGame?: number;
   networkRetryBaseDelayMs?: number;
-  /** 赛后复盘缺省(独立进程/独立凭据;未配 `api_key` 则复盘禁用)。 */
+  /** 赛后复盘缺省(独立凭据;`use` 引用 models,或自带 base_url/api_key/model;三要素缺一则复盘禁用)。 */
   review?: {
+    use?: string;
     base_url?: string;
     api_key?: string;
     model?: string;
@@ -133,14 +162,14 @@ class HttpError extends Error {
 }
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+/** 非空字符串:空白串/空串视为"未提供"(表单留空回落 config 的关键)。 */
+const nes = (v: unknown): string | undefined => {
+  const s = typeof v === 'string' ? v.trim() : undefined;
+  return s ? s : undefined;
+};
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 const obj = <T>(v: unknown): T | undefined =>
   v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as T) : undefined;
-
-function requireString(v: unknown): string {
-  if (typeof v !== 'string' || v.trim() === '') throw new Error('required');
-  return v;
-}
 
 /**
  * 日志落盘:用 appendFileSync 保证「write 返回即已持久化」,回放/补发与实时严格同源。
@@ -379,33 +408,74 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
   };
 
   /* ---------- 内部 ---------- */
+  /** 按名取 config.models 里的 profile;未定义 → 400(不静默回落,避免配错名打到错误端点)。 */
+  function resolveProfile(name: string, d: ServerDefaults): ModelProfile {
+    const p = d.models?.[name];
+    if (!p) {
+      throw new HttpError(
+        400,
+        'VALIDATION_ERROR',
+        `config.models 中未定义模型: "${name}"`,
+        '请在 config.json 的 models 注册表中定义该名称,或改用内联 baseUrl/apiKey/model',
+      );
+    }
+    return p;
+  }
+
   function resolveSide(side: Side, raw: unknown, d: ServerDefaults, reqTimeoutMs?: number): ResolvedSide {
     const b = obj<Record<string, unknown>>(raw);
     if (!b) throw new HttpError(400, 'VALIDATION_ERROR', `body.${side} 必填`);
     const defSide = (side === 'red' ? d.red : d.black) ?? {};
 
-    let model: string;
-    try {
-      model = requireString(str(b.model) ?? defSide.model);
-    } catch {
-      throw new HttpError(400, 'VALIDATION_ERROR', `body.${side}.model 必填`);
+    // ① 按名引用 profile:请求体 use 优先,回落 config.<side>.use。
+    const useName = nes(b.use) ?? nes(defSide.use);
+    const prof = useName ? resolveProfile(useName, d) : undefined;
+
+    // ② baseUrl / model:请求体内联 > 被引用 profile > 旧格式顶层/config.<side>.model。
+    //    nes() 把空串/空白视为未提供(表单留空 → 回落 config)。
+    const baseUrl = nes(b.baseUrl) ?? nes(prof?.base_url) ?? nes(d.base_url);
+    const model = nes(b.model) ?? nes(prof?.model) ?? nes(defSide.model);
+    if (!baseUrl) {
+      throw new HttpError(400, 'VALIDATION_ERROR', `body.${side}.baseUrl 必填`, '或在 config.json 为该方配置 use 指向 models');
     }
-    const baseUrl = str(b.baseUrl) ?? d.base_url;
-    if (!baseUrl) throw new HttpError(400, 'VALIDATION_ERROR', `body.${side}.baseUrl 必填`);
-    // B1 密钥外带向量:未显式给 apiKey 时,仅在 baseUrl 与 config 的 base_url **完全一致**时
-    // 才允许回落 config 的 api_key;否则视为缺参(400),绝不把服务器 key 发给任意 baseUrl。
-    const apiKey = str(b.apiKey) ?? (baseUrl === d.base_url ? d.api_key : undefined);
-    if (!apiKey) throw new HttpError(400, 'VALIDATION_ERROR', `body.${side}.apiKey 必填`);
+    if (!model) {
+      throw new HttpError(400, 'VALIDATION_ERROR', `body.${side}.model 必填`, '或在 config models 的 profile 中配置 model');
+    }
+
+    // ③ 密钥外带防护(红线):未显式给 apiKey 时,服务端 key 只能回落给"与最终 baseUrl 同源"的那份:
+    //    - profile 的 key 仅当 baseUrl 取自该 profile(未被请求体篡改)时可用;
+    //    - 旧格式顶层 api_key 仅当 baseUrl === config.base_url 时可用;
+    //    否则 400——绝不把服务端密钥发往请求体指定的任意端点。
+    let apiKey = nes(b.apiKey);
+    if (!apiKey && prof && baseUrl === nes(prof.base_url)) apiKey = nes(prof.api_key);
+    if (!apiKey && baseUrl === nes(d.base_url)) apiKey = nes(d.api_key);
+    if (!apiKey) {
+      throw new HttpError(
+        400,
+        'VALIDATION_ERROR',
+        `body.${side}.apiKey 必填`,
+        '未给 apiKey 且 baseUrl 与服务端配置端点不一致(密钥外带防护):请显式提供 apiKey,或使用 config 中定义的模型名',
+      );
+    }
 
     return {
       baseUrl,
       apiKey,
       model,
-      systemPrompt: str(b.systemPrompt) ?? defSide.systemPrompt,
-      maxTokens: num(b.maxTokens) ?? num(b.max_tokens) ?? defSide.maxTokens ?? d.max_tokens,
+      systemPrompt:
+        nes(b.systemPrompt) ?? nes(b.system_prompt) ?? nes(prof?.system_prompt) ?? nes(defSide.systemPrompt),
+      maxTokens:
+        num(b.maxTokens) ?? num(b.max_tokens) ?? num(prof?.max_tokens) ?? num(defSide.maxTokens) ?? num(d.max_tokens),
       // B4:请求级 config.timeoutMs 与 config.json timeout_ms 同权;请求级优先,单边显式值仍最优先。
-      timeoutMs: num(b.timeoutMs) ?? num(b.timeout_ms) ?? defSide.timeoutMs ?? reqTimeoutMs ?? d.timeout_ms,
-      tokensPerM: obj(b.tokensPerM) ?? defSide.tokensPerM,
+      timeoutMs:
+        num(b.timeoutMs) ??
+        num(b.timeout_ms) ??
+        num(prof?.timeout_ms) ??
+        num(defSide.timeoutMs) ??
+        reqTimeoutMs ??
+        num(d.timeout_ms),
+      tokensPerM:
+        obj<TokensPerM>(b.tokensPerM) ?? obj<TokensPerM>(b.tokens_per_m) ?? obj<TokensPerM>(prof?.tokens_per_m) ?? defSide.tokensPerM,
     };
   }
 
@@ -460,17 +530,27 @@ function reasonOf(r: GameRecord): string | null {
 function resolveReview(raw: unknown, d: ServerDefaults): ResolvedReview | undefined {
   const b = obj<Record<string, unknown>>(raw);
   const def = d.review ?? {};
-  const baseUrl = str(b?.baseUrl) ?? def.base_url;
-  const apiKey = str(b?.apiKey) ?? def.api_key;
-  const model = str(b?.model) ?? def.model;
-  if (!baseUrl || !apiKey || !model) return undefined;
+  // review.use 引用 models 注册表;引用未定义/profile 不全 → prof 为空 → 三要素缺 → 降级(复盘是可选增强,不令建局失败)。
+  const useName = nes(b?.use) ?? nes(def.use);
+  const prof = useName ? d.models?.[useName] : undefined;
+  const baseUrl = nes(b?.baseUrl) ?? nes(prof?.base_url) ?? nes(def.base_url);
+  const model = nes(b?.model) ?? nes(prof?.model) ?? nes(def.model);
+  // 独立凭据红线:复盘只用它引用的 profile key 或 review 段自带 key,绝不借红黑/顶层 api_key。
+  // 同样按 baseUrl 同源回落,防请求体篡改 baseUrl 外带服务端密钥。
+  let apiKey = nes(b?.apiKey);
+  if (!apiKey && prof && baseUrl === nes(prof.base_url)) apiKey = nes(prof.api_key);
+  if (!apiKey && baseUrl === nes(def.base_url)) apiKey = nes(def.api_key);
+  if (!baseUrl || !apiKey || !model) return undefined; // 三要素缺一 ⇒ 复盘禁用(静默降级)
   return {
     baseUrl,
     apiKey,
     model,
-    maxTokens: num(b?.maxTokens) ?? num(b?.max_tokens) ?? def.max_tokens,
-    timeoutMs: num(b?.timeoutMs) ?? num(b?.timeout_ms) ?? def.timeout_ms,
-    tokensPerM: resolveTokensPerM(obj(b?.tokensPerM), def.tokens_per_m),
+    maxTokens: num(b?.maxTokens) ?? num(b?.max_tokens) ?? num(prof?.max_tokens) ?? num(def.max_tokens),
+    timeoutMs: num(b?.timeoutMs) ?? num(b?.timeout_ms) ?? num(prof?.timeout_ms) ?? num(def.timeout_ms),
+    tokensPerM: resolveTokensPerM(
+      obj(b?.tokensPerM) ?? obj(b?.tokens_per_m),
+      prof?.tokens_per_m ?? def.tokens_per_m,
+    ),
   };
 }
 

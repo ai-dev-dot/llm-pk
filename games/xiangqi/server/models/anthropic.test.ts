@@ -166,6 +166,20 @@ describe('AnthropicPlayer 基本调用', () => {
     expect(c.move).toBe('');
   });
 
+  it('max_tokens 默认不传:未配置 maxTokens 时请求体不含 max_tokens 字段', async () => {
+    const fn = stubFetch(toolUseResponse());
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    await p.pickMove(fakeCtx);
+    expect(requestOf(fn).body).not.toHaveProperty('max_tokens');
+  });
+
+  it('max_tokens 显式配置时才带上请求体', async () => {
+    const fn = stubFetch(toolUseResponse());
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', maxTokens: 8192 });
+    await p.pickMove(fakeCtx);
+    expect(requestOf(fn).body.max_tokens).toBe(8192);
+  });
+
   it('B2:工具参数缺失(输入无 move 键)→ 返回空 move(打回)', async () => {
     stubFetch(
       new Response(

@@ -367,6 +367,131 @@ describe('B1 密钥外带向量与 L5 规则参数', () => {
   });
 });
 
+/* ---------- config models 注册表(profiles):多 LLM 定义 + 红黑按名引用 ---------- */
+
+describe('config models 注册表(profiles)', () => {
+  const profConfig: ServerDefaults = {
+    models: {
+      glm: {
+        base_url: 'https://glm.example/anthropic',
+        api_key: 'sk-glm',
+        model: 'glm-4.6',
+        max_tokens: 8192,
+        system_prompt: '你是红方棋手',
+      },
+      kimi: { base_url: 'https://kimi.example/anthropic', api_key: 'sk-kimi', model: 'kimi-k2' },
+    },
+    red: { use: 'glm' },
+    black: { use: 'kimi' },
+  };
+
+  it('请求体留空 → 按 red.use/black.use 解析到各自 profile(端点/密钥/模型/可选字段)', async () => {
+    const seen: Array<{ side: Side; cfg?: ResolvedSide }> = [];
+    const srv = await startServer(
+      (side, cfg) => {
+        seen.push({ side, cfg });
+        return scriptPlayer(side, ['a4-a5', 'i7-i6']);
+      },
+      undefined,
+      profConfig,
+    );
+    try {
+      const res = await request(srv.server).post('/api/games').send({ red: {}, black: {} });
+      expect(res.status).toBe(201);
+      await waitFor(() => seen.length === 2);
+      const red = seen.find((s) => s.side === 'red')!.cfg!;
+      const black = seen.find((s) => s.side === 'black')!.cfg!;
+      expect(red).toMatchObject({ baseUrl: 'https://glm.example/anthropic', apiKey: 'sk-glm', model: 'glm-4.6' });
+      expect(red.maxTokens).toBe(8192);
+      expect(red.systemPrompt).toBe('你是红方棋手');
+      expect(black).toMatchObject({ baseUrl: 'https://kimi.example/anthropic', apiKey: 'sk-kimi', model: 'kimi-k2' });
+      expect(JSON.stringify(res.body)).not.toContain('sk-glm'); // 密钥不落响应
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('请求体 use 覆盖 config.<side>.use(red 改引用 kimi)', async () => {
+    const seen: ResolvedSide[] = [];
+    const srv = await startServer(
+      (side, cfg) => {
+        if (side === 'red') seen.push(cfg!);
+        return scriptPlayer(side, ['a4-a5', 'i7-i6']);
+      },
+      undefined,
+      profConfig,
+    );
+    try {
+      const res = await request(srv.server).post('/api/games').send({ red: { use: 'kimi' }, black: {} });
+      expect(res.status).toBe(201);
+      await waitFor(() => seen.length === 1);
+      expect(seen[0]!).toMatchObject({ baseUrl: 'https://kimi.example/anthropic', model: 'kimi-k2', apiKey: 'sk-kimi' });
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('use 引用未定义的 profile 名 → 400 + 清晰提示(不静默打到错误端点)', async () => {
+    const srv = await startServer(undefined, undefined, profConfig);
+    try {
+      const res = await request(srv.server).post('/api/games').send({ red: { use: 'nope' }, black: {} });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(String(res.body.error.message)).toContain('nope');
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('密钥外带防护:body 给 use 但篡改 baseUrl 且不给 key → 400,profile key 绝不外发', async () => {
+    const seen: ResolvedSide[] = [];
+    const srv = await startServer(
+      (side, cfg) => {
+        seen.push(cfg!);
+        return scriptPlayer(side, ['a4-a5', 'i7-i6']);
+      },
+      undefined,
+      profConfig,
+    );
+    try {
+      const res = await request(srv.server).post('/api/games').send({
+        red: { use: 'glm', baseUrl: 'http://evil.example' },
+        black: {},
+      });
+      expect(res.status).toBe(400);
+      expect(seen).toHaveLength(0); // 未构造任何 player
+      expect(JSON.stringify(res.body)).not.toContain('sk-glm');
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('请求体内联可选项覆盖 profile(model/systemPrompt);未改 baseUrl 时 key 仍安全回落 profile', async () => {
+    const seen: ResolvedSide[] = [];
+    const srv = await startServer(
+      (side, cfg) => {
+        if (side === 'red') seen.push(cfg!);
+        return scriptPlayer(side, ['a4-a5', 'i7-i6']);
+      },
+      undefined,
+      profConfig,
+    );
+    try {
+      const res = await request(srv.server).post('/api/games').send({
+        red: { use: 'glm', model: 'glm-4.5', systemPrompt: '自定义红方' },
+        black: { baseUrl: 'http://direct.local', apiKey: 'sk-direct', model: 'm-direct' },
+      });
+      expect(res.status).toBe(201);
+      await waitFor(() => seen.length === 1);
+      expect(seen[0]!.model).toBe('glm-4.5');
+      expect(seen[0]!.systemPrompt).toBe('自定义红方');
+      expect(seen[0]!.apiKey).toBe('sk-glm'); // baseUrl 未篡改 → profile key 正常回落
+    } finally {
+      await srv.dispose();
+    }
+  });
+});
+
 /* ---------- 用例 2:控制端点状态码 ---------- */
 
 describe('REST 控制端点', () => {

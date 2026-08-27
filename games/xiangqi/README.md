@@ -49,26 +49,38 @@ npm install
 cp config.example.json config.json
 ```
 
+在 `models` 里定义任意多个**可复用的 LLM profile**(各自独立端点/密钥/模型),红、黑、复盘用 `use` 按名引用——红黑可以打不同厂商、不同 key:
+
 ```jsonc
 {
-  "base_url": "https://api.anthropic.com",
-  "api_key": "sk-…",                          // 必填;构造模型客户端用,绝不落日志
-  "red":   { "model": "claude-sonnet-4-5" },
-  "black": { "model": "claude-sonnet-4-5" },
-  "steps": 40,                                // 折成 maxTotalMoves(步数上限判和)
-  "max_tokens": 1024,
-  "timeout_ms": 120000,
-  "review": {                                   // 【可选】赛后 AI 复盘(独立凭据)
-    "base_url": "https://api.anthropic.com",
-    "api_key": "sk-…",
-    "model": "claude-sonnet-4-5",
-    "max_tokens": 1024,
-    "timeout_ms": 120000
-  }
+  "models": {
+    "glm46": {
+      "base_url": "https://open.bigmodel.cn/api/anthropic",  // 须为 Anthropic 兼容端点(/v1/messages)
+      "api_key": "sk-…",                                    // 仅用于构造客户端,绝不落日志
+      "model": "glm-4.6"
+      // 可选:system_prompt / max_tokens / timeout_ms / tokens_per_m
+    },
+    "kimi": {
+      "base_url": "https://api.moonshot.cn/anthropic",
+      "api_key": "sk-…",
+      "model": "kimi-k2-0905-preview"
+    }
+  },
+  "red":    { "use": "glm46" },   // 红方引用 glm46
+  "black":  { "use": "kimi" },    // 黑方引用 kimi(不同厂商/key 对打)
+  "review": { "use": "glm46" },   // 【可选】赛后复盘,同样按名引用
+  "steps": 40,                    // 折成 maxTotalMoves(步数上限判和)
+  "timeout_ms": 120000
 }
 ```
 
-> **[review 段可选]** 复盘使用**独立**的 base_url/api_key/model(与对局红黑完全隔离,绝不借用对局方 key)。三要素缺一 ⇒ 复盘自动禁用。不配也可正常对局,仅无复盘摘要。
+**国内模型**:客户端走 Anthropic Messages 协议(`/v1/messages` + 强制 tool_use + SSE),请用提供 **Anthropic 兼容端点**的国内服务,如智谱 GLM(`https://open.bigmodel.cn/api/anthropic`)、Kimi(`https://api.moonshot.cn/anthropic`);直连国内端点无需代理。`base_url` 末尾带不带 `/v1` 都会自动补全。
+
+**`max_tokens` 默认不传**:请求体省略该字段,由模型端点用自身默认输出上限(适配长思考,不再保守卡在 1024)。仅当某端点强制要求时,在对应 profile 里加 `"max_tokens": 8192`。
+
+> **[review 段可选]** 复盘用**独立凭据**(`use` 引用一个 profile,与对局红黑隔离,绝不借用对局方 key)。引用的 profile 缺 base_url/api_key/model 三要素 ⇒ 复盘自动静默降级。不配也可正常对局,仅无复盘摘要。
+>
+> **[旧格式兼容]** 仍支持顶层 `base_url`/`api_key` + `red.model`/`black.model` 的扁平结构;密钥外带防护不变——未显式给 key 时,服务端 key 只会回落给与配置端点**完全同源**的请求。
 
 规则参数(可选,缺省走引擎默认):`maxTotalMoves`(默认 200 判和)、`illegalAttemptsLimit`(默认 3 判负)、`drawRepeat`(默认 3)、`networkRetries`(默认 3)、`maxCostPerGame`(成本守卫,超限判和)、`carrySelfAnalysisN`(己方思考回显窗口,默认 6)、`contextBudgetTokens`(软护栏,默认 32000)。
 
@@ -94,7 +106,7 @@ npm run dev          # vite;自动代理 /api、/ws → 127.0.0.1:3010
 
 ## 对局操作
 
-1. **新局表单**:红黑各填 `baseUrl / apiKey / model`(必填),`systemPrompt` 可选。apiKey 仅存于浏览器内存,随请求直发后端,不落 UI 状态。
+1. **新局表单**:红黑可各填 `baseUrl / apiKey / model`(直填),`systemPrompt` 可选;**也可全部留空**,回落服务器 `config.json` 里 `red.use`/`black.use` 引用的 profile。每侧要么填全、要么全空(半套会被本地拦截)。apiKey 仅存于浏览器内存,随请求直发后端,不落 UI 状态。
 2. **实时对局页**:
    - 棋盘实时落子,顶栏显示本局 cost 汇总($ US);
    - 侧栏**思考面板**流式呈现当前行棋方思考(analysis),逐步累计成本数字;

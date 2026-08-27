@@ -70,9 +70,10 @@ server/arena.ts(仲裁) ──appendEvent──► logs/*.jsonl ──GET /:id/r
 
 ## 工程注意(实施期沉淀)
 
-- **密钥红线**:`api_key` 只存在于 `config.json`/请求体与模型客户端构造;**绝不**进日志、事件、WS、response;`server/game-log.ts` 的 `sanitizeForLog` 强制执行。服务默认绑 `127.0.0.1`;config 的 key 仅在 `baseUrl === config.base_url` 时回落给请求。
+- **密钥红线**:`api_key` 只存在于 `config.json`/请求体与模型客户端构造;**绝不**进日志、事件、WS、response;`server/game-log.ts` 的 `sanitizeForLog` 强制执行。服务默认绑 `127.0.0.1`。密钥回落按 **profile 粒度同源校验**:请求未给 key 时,服务端 key 只回落给与最终 `baseUrl` **完全同源**的那份(被引用 profile 或旧顶层 `base_url`);请求体篡改 `baseUrl` 又不给 key → 400,密钥绝不外发。
+- **LLM profiles 配置**:`config.json` 用 `models: { <name>: {base_url, api_key, model, ...} }` 注册表定义任意多个可复用 LLM,`red.use`/`black.use`/`review.use` 按名引用(红黑可打不同厂商/key);请求体内联 `baseUrl/apiKey/model` 优先,表单**全空**则回落 config profile。客户端走 Anthropic Messages 协议(`/v1/messages`),国内用智谱/Kimi 的 Anthropic 兼容端点。**`max_tokens` 默认不传**(请求体省略,交端点默认;仅 profile 显式 `max_tokens` 才带)。旧扁平结构(顶层 `base_url`+`red.model`)仍兼容。解析在 `server/http.ts` 的 `resolveSide`/`resolveReview`/`resolveProfile`。
 - **分数段与事实**:`begin` 事件保留 `model` 名(评估标识,非密钥)。
-- **M0 spike 待 key**:`npm run spike:parse` 需 `config.json`(红/黑 `baseUrl/apiKey/model`)才跑真实解析率;无 key 时 exit 2。
+- **M0 spike 待 key**:`npm run spike:parse` 需 `config.json`(`models` profile + 红/黑 `use`,或旧扁平 `baseUrl/apiKey/model`)才跑真实解析率;无 key 时 exit 2。
 - **`finish` reason 码**是稳定字符串(`draw-repeat`/`draw-no-mating-material`/`draw-max-moves`/`draw-cost-limit`/`illegal-moves`/`timeout`/`internal-error`),前端 `web/src/lib/format.ts` 与之对齐,新增 reason 需两侧同步。
 - 计划与评审工件在 `docs/superpowers/{specs,plans}/`;待办见根 `TODOS.md`(批量匹配、分享链接、一键复跑等 deferred)。
 

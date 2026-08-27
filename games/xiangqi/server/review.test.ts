@@ -241,6 +241,27 @@ describe('reviewGame 默认 client(原生 fetch)', () => {
     expect(String(seen[0]!.body)).not.toContain('sk-review-x');
   });
 
+  it('max_tokens 默认不传:未配置时复盘请求体不含 max_tokens', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', async (_url: unknown, init: Record<string, unknown>) => {
+      seen.push(String(init.body));
+      return respOf(JSON.stringify({ summary: 's', highlights: [], mistakes: [] }));
+    });
+    const result = await reviewGame(sampleEvents(), makeCtx({ apiKey: 'k' }));
+    expect(result.kind).toBe('ok');
+    expect(JSON.parse(seen[0]!)).not.toHaveProperty('max_tokens');
+  });
+
+  it('max_tokens 显式配置时才带上复盘请求体', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', async (_url: unknown, init: Record<string, unknown>) => {
+      seen.push(String(init.body));
+      return respOf(JSON.stringify({ summary: 's', highlights: [], mistakes: [] }));
+    });
+    await reviewGame(sampleEvents(), makeCtx({ apiKey: 'k', maxTokens: 4096 }));
+    expect(JSON.parse(seen[0]!).max_tokens).toBe(4096);
+  });
+
   it('fetch 500 → degraded', async () => {
     vi.stubGlobal('fetch', async () => respOf('{"error":{"message":"boom"}}', 500));
     const result = await reviewGame(sampleEvents(), makeCtx());

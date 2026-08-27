@@ -60,7 +60,6 @@ export type ReviewResult = { kind: 'ok'; review: ReviewPayload } | { kind: 'degr
 /* ---------- 默认缺省 ---------- */
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const DEFAULT_MAX_TOKENS = 1024;
 const ANALYSIS_TRIM = 160; // 单条己方思考入叙述的截断长度(控制输入 token)
 
 /* ---------- 公共对局叙述(digest)构造 ---------- */
@@ -174,14 +173,14 @@ function readUsage(json: unknown, tokensPerM: TokensPerM): Usage {
 
 function createDefaultClient(cfg: ReviewClientConfig): ReviewClient {
   const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxTokens = cfg.maxTokens ?? DEFAULT_MAX_TOKENS;
+  const maxTokens = cfg.maxTokens; // 默认不传 max_tokens(交给端点默认);显式给才带
   const tokensPerM = cfg.tokensPerM ?? DEFAULT_TOKENS_PER_M;
   return {
     async generate(digest: string) {
       const started = Date.now();
       const body = {
         model: cfg.model,
-        max_tokens: maxTokens,
+        ...(maxTokens ? { max_tokens: maxTokens } : {}),
         system: REVIEW_SYSTEM,
         messages: [{ role: 'user', content: digest }],
       };

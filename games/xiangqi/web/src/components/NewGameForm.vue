@@ -27,12 +27,20 @@ const form = reactive({
 
 const localValid = ref(true);
 
-function checkSide(s: SideConfig): boolean {
-  return s.baseUrl.trim() !== '' && s.apiKey.trim() !== '' && s.model.trim() !== '';
+/**
+ * 一侧的填写状态:
+ * - 'empty'    三要素全空 → 回落服务器 config.json 的 red.use/black.use profile;
+ * - 'complete' 三要素填全 → 表单直填;
+ * - 'partial'  只填了一部分 → 本地拦截(避免半套配置打到错误端点)。
+ */
+function sideState(s: SideConfig): 'empty' | 'complete' | 'partial' {
+  const filled = [s.baseUrl, s.apiKey, s.model].filter((v) => (v ?? '').trim() !== '').length;
+  if (filled === 0) return 'empty';
+  return filled === 3 ? 'complete' : 'partial';
 }
 
 function submit(): void {
-  localValid.value = checkSide(form.red) && checkSide(form.black);
+  localValid.value = sideState(form.red) !== 'partial' && sideState(form.black) !== 'partial';
   if (!localValid.value) return;
   const norm = (s: SideConfig) => ({
     baseUrl: s.baseUrl.trim(),
@@ -49,28 +57,31 @@ function submit(): void {
 <template>
   <form class="new-form" data-testid="new-game-form" @submit.prevent="submit">
     <h2 class="form-title">开一局</h2>
-    <p class="form-note">红黑可对不同的模型供应商/模型;apiKey 仅存于本浏览器内存,随请求直发后端,不落 UI 状态。</p>
+    <p class="form-note">
+      红黑可对不同的模型供应商/模型;apiKey 仅存于本浏览器内存,随请求直发后端,不落 UI 状态。<br />
+      每方<strong>全部留空</strong>则使用服务器 config.json 中 <code>red.use</code>/<code>black.use</code> 指定的模型;直填则以表单为准。
+    </p>
 
     <div class="side-grid">
       <fieldset class="side-col red" data-side="red">
         <legend>红方 · 先手</legend>
-        <label>baseUrl<input v-model="form.red.baseUrl" type="url" placeholder="https://api.anthropic.com/v1" required /></label>
-        <label>apiKey<input v-model="form.red.apiKey" type="password" placeholder="sk-…" required /></label>
-        <label>model<input v-model="form.red.model" type="text" placeholder="claude-sonnet-4-…" required /></label>
+        <label>baseUrl<input v-model="form.red.baseUrl" type="url" placeholder="留空用服务器默认,或填 https://…/anthropic" /></label>
+        <label>apiKey<input v-model="form.red.apiKey" type="password" placeholder="留空用服务器默认,或填 sk-…" /></label>
+        <label>model<input v-model="form.red.model" type="text" placeholder="留空用默认,或填模型名" /></label>
         <label class="wide">systemPrompt(可选)<textarea v-model="form.red.systemPrompt" rows="2" placeholder="角色/规则补充,空则用默认模板" /></label>
       </fieldset>
 
       <fieldset class="side-col black" data-side="black">
         <legend>黑方 · 后手</legend>
-        <label>baseUrl<input v-model="form.black.baseUrl" type="url" placeholder="https://api.anthropic.com/v1" required /></label>
-        <label>apiKey<input v-model="form.black.apiKey" type="password" placeholder="sk-…" required /></label>
-        <label>model<input v-model="form.black.model" type="text" placeholder="claude-sonnet-4-…" required /></label>
+        <label>baseUrl<input v-model="form.black.baseUrl" type="url" placeholder="留空用服务器默认,或填 https://…/anthropic" /></label>
+        <label>apiKey<input v-model="form.black.apiKey" type="password" placeholder="留空用服务器默认,或填 sk-…" /></label>
+        <label>model<input v-model="form.black.model" type="text" placeholder="留空用默认,或填模型名" /></label>
         <label class="wide">systemPrompt(可选)<textarea v-model="form.black.systemPrompt" rows="2" placeholder="角色/规则补充,空则用默认模板" /></label>
       </fieldset>
     </div>
 
     <div class="form-actions">
-      <p v-if="!localValid" class="form-error" data-testid="form-error">红黑双方均须填写 baseUrl / apiKey / model</p>
+      <p v-if="!localValid" class="form-error" data-testid="form-error">每方需填全 baseUrl / apiKey / model 三项,或全部留空使用服务器 config.json 默认模型</p>
       <p v-else-if="error" class="form-error" data-testid="form-error">{{ error }}</p>
       <button class="btn pri" type="submit" :disabled="submitting" data-testid="submit">
         {{ submitting ? '创建中…' : '⚔ 开始对局' }}
