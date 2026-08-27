@@ -575,6 +575,7 @@ export class Arena<S = Board, M = Move> {
       timeoutMs: this.cfg.rules?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       carrySelfAnalysisN: this.cfg.rules?.carrySelfAnalysisN ?? DEFAULT_CARRY_SELF_ANALYSIS_N,
       contextBudgetTokens: this.cfg.rules?.contextBudgetTokens ?? DEFAULT_CONTEXT_BUDGET_TOKENS,
+      thinkingMode: this.cfg.rules?.thinkingMode ?? 'off', // 原则 E:每局必记录思考模式(历史缺省视为 off)
     };
     this.emit({
       type: 'begin',

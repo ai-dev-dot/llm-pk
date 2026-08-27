@@ -24,7 +24,7 @@ import request from 'supertest';
 import { createXiangqiServer, type GameRecord, type ResolvedSide, type ServerDefaults } from './http';
 import type { Player, MoveChoice } from './arena';
 import type { ReviewClient, ReviewPayload } from './review';
-import type { GameEvent, ReviewEvent } from './game-log';
+import type { BeginEvent, GameEvent, ReviewEvent } from './game-log';
 import type { ArchivedGame } from './game-archive';
 import type { Side } from '../engine/types';
 
@@ -1005,6 +1005,41 @@ describe('GET /api/logs 与空 body 回落 config', () => {
       expect(g?.status).toBe('finished');
       expect(g?.winner).toBe('draw');
       expect(g?.reason).toBeTruthy();
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('begin.rules.thinkingMode 记录本局思考模式:空 body 默认 off;config.thinkingMode=max 落盘 max(原则 E)', async () => {
+    const cfg: ServerDefaults = {
+      models: {
+        'glm-a': { base_url: 'https://cfg.anthropic.com', api_key: 'sk-cfg', model: 'glm-model' },
+        'kimi-b': { base_url: 'https://cfg.anthropic.com', api_key: 'sk-cfg', model: 'kimi-model' },
+      },
+      red: { use: 'glm-a' },
+      black: { use: 'kimi-b' },
+    };
+    const srv = await startServer((side) => scriptPlayer(side, []), undefined, cfg);
+    try {
+      // 空 body(首页「开始对局」)→ 默认 off 并落盘
+      const offId = (await request(srv.server).post('/api/games').send({})).body.id as string;
+      const offRep = await request(srv.server).get(`/api/games/${offId}/replay`);
+      const offBegin = (offRep.body.events as GameEvent[]).find((e) => e.type === 'begin') as BeginEvent;
+      expect(offBegin.rules?.thinkingMode).toBe('off');
+
+      // 显式 max → 同样落盘(双方同一边界,由 player 构造下发)
+      const maxId = (await request(srv.server).post('/api/games').send({ config: { thinkingMode: 'max' } })).body
+        .id as string;
+      const maxRep = await request(srv.server).get(`/api/games/${maxId}/replay`);
+      const maxBegin = (maxRep.body.events as GameEvent[]).find((e) => e.type === 'begin') as BeginEvent;
+      expect(maxBegin.rules?.thinkingMode).toBe('max');
+
+      // 非法枚举 → 回落 off(枚举归一到二值,无第三选项)
+      const badId = (await request(srv.server).post('/api/games').send({ config: { thinkingMode: 'medium' } })).body
+        .id as string;
+      const badRep = await request(srv.server).get(`/api/games/${badId}/replay`);
+      const badBegin = (badRep.body.events as GameEvent[]).find((e) => e.type === 'begin') as BeginEvent;
+      expect(badBegin.rules?.thinkingMode).toBe('off');
     } finally {
       await srv.dispose();
     }

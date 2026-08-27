@@ -44,6 +44,8 @@ export interface ResolvedSide {
   model: string;
   /** 命名用 label:优先 profile 名(`use` 引用),回落模型名(T19 归档友好 id)。 */
   label: string;
+  /** 本局思考模式(原则 E):请求 config.thinkingMode 解析(rules)后随 player 构造下发,双方同额。 */
+  thinkingMode?: 'off' | 'max';
   systemPrompt?: string;
   maxTokens?: number;
   timeoutMs?: number;
@@ -224,6 +226,7 @@ const defaultBuildPlayer: PlayerFactory = (side, cfg) =>
     maxTokens: cfg.maxTokens,
     timeoutMs: cfg.timeoutMs,
     tokensPerM: cfg.tokensPerM,
+    thinkingMode: cfg.thinkingMode,
   });
 
 const DEFAULT_LOG_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'logs');
@@ -264,10 +267,12 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     ).id;
     const logPath = join(logDir, `${gid}.jsonl`);
     const sink = fileLogSink(logPath); // 与 arena 共用同一对象,事后复盘追加在同一 seq 序列上
+    // 原则 E:同一思考模式以同一边界下发给红黑双方。
+    const thinkingMode = rules.thinkingMode;
     const arena = registry.create({
       gameId: gid,
-      red: { player: buildPlayer('red', red), model: red.model, systemPrompt: red.systemPrompt },
-      black: { player: buildPlayer('black', black), model: black.model, systemPrompt: black.systemPrompt },
+      red: { player: buildPlayer('red', { ...red, thinkingMode }), model: red.model, systemPrompt: red.systemPrompt },
+      black: { player: buildPlayer('black', { ...black, thinkingMode }), model: black.model, systemPrompt: black.systemPrompt },
       sink,
       rules,
       maxCostPerGame,
@@ -531,6 +536,11 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
       if (v !== undefined) out[k] = v;
     }
     if (out.maxTotalMoves === undefined && d.steps !== undefined) out.maxTotalMoves = d.steps;
+    // 原则 E:思考模式枚举归一(非 off/max → 缺省,arena 回落 off 并落盘)。
+    if (out.thinkingMode === undefined) {
+      const raw = cfgBody.thinkingMode ?? defRules.thinkingMode;
+      out.thinkingMode = raw === 'max' ? 'max' : raw === 'off' ? 'off' : undefined;
+    }
     return out;
   }
 

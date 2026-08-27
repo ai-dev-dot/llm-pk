@@ -12,7 +12,7 @@
 //
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnthropicPlayer, DEFAULT_TOKENS_PER_M, estimateCostUsd } from './anthropic';
+import { AnthropicPlayer, DEFAULT_TOKENS_PER_M, estimateCostUsd, MAX_THINKING_BUDGET_TOKENS } from './anthropic';
 import { NetworkError, PlayerCancelled, type MoveContext } from '../arena';
 
 /* ---------- 工具 ---------- */
@@ -423,5 +423,33 @@ describe('AnthropicPlayer SSE 流式(G3)', () => {
     const c = await p.pickMove(ctx);
     expect(c.move).toBe('h3-e3');
     expect(c.usage).toEqual({ promptTokens: 0, completionTokens: 0, costUsd: 0 });
+  });
+});
+
+/* ---------- 思考模式(原则 E)显式下发 ---------- */
+
+describe('思考模式(原则 E)', () => {
+  it('off:请求体显式 thinking.type=disabled(防端点默认开启思考的后门)', async () => {
+    const fn = stubFetch(toolUseResponse());
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', thinkingMode: 'off' });
+    await p.pickMove(fakeCtx);
+    expect(requestOf(fn).body.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('缺省 thinkingMode → off(显式 disabled,绝不依赖端点缺省)', async () => {
+    const fn = stubFetch(toolUseResponse());
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
+    await p.pickMove(fakeCtx);
+    expect(requestOf(fn).body.thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('max:thinking.type=enabled 且 budget_tokens 为全局同额常量(双方一致,公平)', async () => {
+    const fn = stubFetch(toolUseResponse());
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', thinkingMode: 'max' });
+    await p.pickMove(fakeCtx);
+    expect(requestOf(fn).body.thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: MAX_THINKING_BUDGET_TOKENS,
+    });
   });
 });
