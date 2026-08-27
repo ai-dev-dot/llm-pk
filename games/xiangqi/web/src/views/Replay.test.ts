@@ -93,4 +93,17 @@ describe('Replay 视图', () => {
     w.unmount();
     vi.unstubAllGlobals();
   });
+
+  it('「回到当前棋局」按钮 → emit toGame(回放页可直达实时观战)', async () => {
+    vi.stubGlobal('fetch', stubFetch(baseEvents()));
+    const w = mount(Replay, { props: { gameId: 'g' } });
+    await flushPromises();
+
+    expect(w.find('[data-testid="replay-to-game"]').exists()).toBe(true);
+    await w.get('[data-testid="replay-to-game"]').trigger('click');
+    expect(w.emitted('toGame')?.[0]).toBeDefined();
+
+    w.unmount();
+    vi.unstubAllGlobals();
+  });
 });

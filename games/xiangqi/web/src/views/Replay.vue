@@ -19,6 +19,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'exit'): void;
+  (e: 'toGame'): void; // 回放页直接回到当前棋局(实时观战)
 }>();
 
 const r = useReplay(props.gameId);
@@ -163,6 +164,7 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
+      <button class="btn pri" data-testid="replay-to-game" @click="emit('toGame')">回到当前棋局</button>
       <button class="btn exit" data-testid="replay-exit" @click="emit('exit')">退出回放</button>
     </footer>
   </div>

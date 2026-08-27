@@ -82,7 +82,7 @@ async function createAndGo(order: 'new' | 'restart'): Promise<void> {
       </div>
       <div v-else-if="route.kind === 'replay'" class="hdr-right">
         <span class="status-pill"><span class="beam"></span>{{ route.id.slice(0, 8) }}</span>
-        <button class="btn" data-testid="replay-exit" @click="route = { kind: 'home' }">回首页</button>
+        <button class="btn" data-testid="replay-home" @click="route = { kind: 'home' }">回首页</button>
       </div>
     </header>
 
@@ -97,6 +97,7 @@ async function createAndGo(order: 'new' | 'restart'): Promise<void> {
       :key="`r-${route.id}`"
       :game-id="route.id"
       @exit="route = { kind: 'home' }"
+      @to-game="route = { kind: 'game', id: route.id }"
     />
 
     <GameView

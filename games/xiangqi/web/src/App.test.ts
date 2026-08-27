@@ -188,6 +188,16 @@ describe('App 回放导航', () => {
     expect(w.find('[data-testid="replay-view"]').exists()).toBe(true);
     expect(calls).toContain('/api/games/g-smoke/replay');
 
+    // 回放页「回到当前棋局」→ 直达实时观战(重挂 GameView,重新订阅 WS)
+    await w.get('[data-testid="replay-to-game"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="controls"]').exists()).toBe(true);
+    expect(wsInstances).toHaveLength(2); // 原观战连接已断,重挂后新订阅
+
+    // 再进回放,「退出回放」→ 回首页列表
+    await w.get('[data-testid="replay-nav"]').trigger('click');
+    await flushPromises();
+    expect(w.find('[data-testid="replay-view"]').exists()).toBe(true);
     await w.get('[data-testid="replay-exit"]').trigger('click');
     await flushPromises();
     expect(w.find('[data-testid="home-view"]').exists()).toBe(true);
