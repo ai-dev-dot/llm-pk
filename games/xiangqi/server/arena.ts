@@ -114,7 +114,7 @@ export interface ArenaConfig<S = Board, M = Move> {
 
 /* ---------- 默认值(spec §7/§8/§9) ---------- */
 
-const DEFAULT_ILLEGAL_LIMIT = 3;
+const DEFAULT_ILLEGAL_LIMIT = 10;
 const DEFAULT_NETWORK_RETRIES = 3;
 const DEFAULT_TIMEOUT_MS = 120000;
 const DEFAULT_CARRY_SELF_ANALYSIS_N = 6;
@@ -152,6 +152,8 @@ export class Arena<S = Board, M = Move> {
   private readonly sideRejectedEver: Record<Side, boolean> = { red: false, black: false };
   private totalCostUsd = 0;
   private finishRequested_ = false;
+  /** 超时挂起方(原则:网络重试超限不再收尾,挂起等手动「重试」);undefined = 未挂起。 */
+  private stuckSide_?: Side;
 
   // G3 流式节流状态(仅当有 onLive 订阅者时 flush)
   private liveBuf = '';
@@ -211,6 +213,22 @@ export class Arena<S = Board, M = Move> {
 
   get totalCost(): number {
     return this.totalCostUsd;
+  }
+
+  /** 超时挂起方(重试超限后进入挂起,等待 `retrySide` 手动恢复);undefined = 无挂起。 */
+  get stuckSide(): Side | undefined {
+    return this.stuckSide_;
+  }
+
+  /**
+   * 手动恢复超时挂起:仅当 `side` 正处于挂起态才唤醒事件循环并返回 true。
+   * 挂起由 pickMoveWithRetry 超限发起;恢复后该方按新尝试序列重新发起 LLM 请求。
+   */
+  retrySide(side: Side): boolean {
+    if (this.stuckSide_ !== side) return false;
+    this.stuckSide_ = undefined; // 先解锁再唤醒:让挂起循环退出(否则 while 条件恒真死等)
+    this.kick();
+    return true;
   }
 
   /** 当前行棋一步的上下文(测试/审计可回看;动作侧取 turn_)。 */
@@ -411,9 +429,10 @@ export class Arena<S = Board, M = Move> {
   }
 
   /**
-   * 网络重试:指数退避 `retries` 次。超限**不判胜负**——网络问题不决定棋力,以和棋收尾
-   * `winner: 'draw', reason: 'draw-network'`。pause 中止的回合(PlayerCancelled)上抛,
-   * 由事件循环在 resume 后重新走。**
+   * 网络重试:指数退避 `retries` 次。超限**不判胜负、不终止对局**——进入超时挂起:
+   * 发 `timeout` 事件,回合停在当前方等待外部手动 `retrySide`(页面对应方显示「已超时 + 重试」);
+   * 重试后按新尝试序列重新发起。pause 中止的回合(PlayerCancelled)上抛,
+   * 由事件循环在 resume 后重新走。
    */
   private async pickMoveWithRetry(side: Side): Promise<MoveChoice> {
     const retries = this.cfg.rules?.networkRetries ?? DEFAULT_NETWORK_RETRIES;
@@ -426,8 +445,14 @@ export class Arena<S = Board, M = Move> {
         if (err instanceof PlayerCancelled) throw err; // 暂停中止:不重试、不判负
         if (!isNetworkError(err)) throw err;
         if (attempt >= retries) {
-          this.finishGame({ winner: 'draw', reason: 'draw-network' });
-          return { analysis: '', move: '' };
+          // 超时挂起:不收获尾,挂起等手动重试
+          this.stuckSide_ = side;
+          this.emit({ type: 'timeout', side });
+          while (this.stuckSide_ === side && !this.finishRequested_) await this.waitKick();
+          if (this.finishRequested_ || this.aborted) return { analysis: '', move: '' };
+          this.stuckSide_ = undefined;
+          attempt = 0; // 手动重试视为新尝试序列,重走指数退避
+          continue;
         }
         attempt++;
         this.emit({ type: 'retry', side, attempt, cause: 'network' });
@@ -560,6 +585,7 @@ export class Arena<S = Board, M = Move> {
     this.sideRejectedEver.black = false;
     this.totalCostUsd = 0;
     this.finishRequested_ = false;
+    this.stuckSide_ = undefined;
     this.singleStep_ = false;
     this.waiters = [];
     this.sinkEnded = false;

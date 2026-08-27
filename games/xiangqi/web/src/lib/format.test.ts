@@ -9,7 +9,7 @@ describe('fmtReason', () => {
   it('覆盖 server finish reason 码全集', () => {
     expect(fmtReason('checkmate')).toBe('絕殺');
     expect(fmtReason('stalemate')).toBe('困毙');
-    expect(fmtReason('illegal-moves')).toBe('打回超限判负');
+    expect(fmtReason('illegal-moves')).toBe('打回超过上限判负');
     expect(fmtReason('timeout')).toBe('网络超时判负');
     expect(fmtReason('internal-error')).toBe('对局异常终止');
     expect(fmtReason('draw-aborted')).toBe('强制中止');

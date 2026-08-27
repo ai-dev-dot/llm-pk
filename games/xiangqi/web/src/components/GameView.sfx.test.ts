@@ -130,4 +130,58 @@ describe('GameView 音效接线 B5', () => {
     await flushPromises();
     expect(setMuted).toHaveBeenLastCalledWith(false);
   });
+
+  it('裁判 toast:illegal-attempt 事件 → 显示「*方已经 n 次未遵守规则,被打回」;连续打回刷新同一条', async () => {
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
+    const w = mount(GameView, { props: { gameId: 'g-sfx' } });
+    const ws = wsInstances[0]!;
+    ws.onmessage!({ data: frame(1, beginEv()) });
+    ws.onmessage!({
+      data: frame(2, { seq: 2, ts: 't', type: 'illegal-attempt', side: 'black', round: 1, reason: '马腿被绊', violations: { pre: 1, post: 0 } }),
+    });
+    await flushPromises();
+    expect(w.get('[data-testid="referee-toast"]').text()).toContain('黑方 已经 1 次未遵守规则,被打回');
+
+    // 第二次打回 → 同一条更新计数(不叠加多条)
+    ws.onmessage!({
+      data: frame(3, { seq: 3, ts: 't', type: 'illegal-attempt', side: 'black', round: 2, reason: '送将', violations: { pre: 1, post: 1 } }),
+    });
+    await flushPromises();
+    const toast = w.get('[data-testid="referee-toast"]').text();
+    expect(toast).toContain('黑方 已经 2 次未遵守规则,被打回');
+    expect(w.findAll('[data-testid="referee-toast"]')).toHaveLength(1);
+    w.unmount();
+  });
+
+  it('超时挂起 UI:timeout 事件 → 对应方「已超时 + 重试」条;点击重试 POST /:id/retry 并解除挂起', async () => {
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u.endsWith('/retry')) {
+          calls.push(u);
+          return new Response(JSON.stringify({ id: 'g-sfx', status: 'running', stuck: null }), { status: 200 });
+        }
+        return new Response(JSON.stringify({}), { status: 404 });
+      }),
+    );
+    const w = mount(GameView, { props: { gameId: 'g-sfx' } });
+    const ws = wsInstances[0]!;
+    ws.onmessage!({ data: frame(1, beginEv()) });
+    ws.onmessage!({ data: frame(2, { seq: 2, ts: 't', type: 'timeout', side: 'red' }) });
+    await flushPromises();
+
+    expect(w.find('[data-testid="stuck-red"]').exists()).toBe(true);
+    expect(w.get('[data-testid="stuck-red"]').text()).toContain('已超时');
+    expect(w.find('[data-testid="stuck-black"]').exists()).toBe(false);
+
+    await w.get('[data-testid="retry-red"]').trigger('click');
+    await flushPromises();
+    expect(calls).toContain('/api/games/g-sfx/retry');
+    // retry 成功 → 挂起解除,超时条消失
+    expect(w.find('[data-testid="stuck-red"]').exists()).toBe(false);
+    w.unmount();
+  });
 });

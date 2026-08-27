@@ -109,9 +109,42 @@ onBeforeUnmount(() => {
   destroyed = true;
   game.controls.destroy();
   clearTimeout(checkTimer);
+  clearTimeout(toastTimer);
   clearInterval(thinkTimer);
   unlockCleanup?.();
 });
+
+/* ---------- 裁判打回 toast(需求:打回留痕不中断观战;每次打回刷新同一条,3s 自动消失) ---------- */
+const refereeToast = ref<{ side: Side; count: number } | null>(null);
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+watch(
+  () => game.rejections.length,
+  (len, old) => {
+    if (len <= (old ?? 0)) return;
+    const newest = game.rejections[len - 1];
+    if (!newest) return;
+    refereeToast.value = { side: newest.side, count: game.rejectCount[newest.side] };
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      refereeToast.value = null;
+    }, 3000);
+  },
+);
+
+/* ---------- 超时挂起的手动重试(重试超限不对局终止,对应方显示「已超时 + 重试」) ---------- */
+const retrying = ref<Side | null>(null);
+function onRetry(side: Side): void {
+  if (retrying.value) return;
+  retrying.value = side;
+  game.controls
+    .retry(side)
+    .catch(() => {
+      /* 保持超时条,可再次触发 */
+    })
+    .finally(() => {
+      retrying.value = null;
+    });
+}
 
 /* ---------- 走子慢放(分阶段):①hover 待动子高亮闪烁 → ②path 带箭头路径高亮 → ③落子(重复 REPEAT 次) ---------- */
 const REPEAT = 3;
@@ -267,6 +300,14 @@ function moveLine(m: MoveRecord): string {
 
 <template>
   <div class="game-view">
+    <!-- 裁判打回 toast(轻量留痕,不判负;连续打回刷新同一条) -->
+    <Transition name="fade">
+      <div v-if="refereeToast" class="referee-toast" data-testid="referee-toast">
+        <span class="rt-ico">⚠</span>
+        <span>{{ refereeToast.side === 'red' ? '红方' : '黑方' }} 已经 {{ refereeToast.count }} 次未遵守规则,被打回</span>
+      </div>
+    </Transition>
+
     <!-- 顶部公共 banner:控制条 + meta + 思考计时(不属于任何一方) -->
     <header class="gv-banner">
       <GameControls
@@ -310,6 +351,22 @@ function moveLine(m: MoveRecord): string {
     <main class="stage">
       <!-- 左栏:黑方(棋盘上方一方) -->
       <aside class="side-pane left" data-pane="black">
+        <div
+          v-if="game.stuckSide === 'black' && game.phase === 'running'"
+          class="stuck-banner black"
+          data-testid="stuck-black"
+        >
+          <span class="sb-ico">⏱</span>
+          <b>已超时</b>
+          <button
+            class="sb-btn"
+            :disabled="retrying === 'black'"
+            data-testid="retry-black"
+            @click="onRetry('black')"
+          >
+            {{ retrying === 'black' ? '重试中…' : '重试' }}
+          </button>
+        </div>
         <ThoughtPanel
           side="black"
           name="黑方"
@@ -350,6 +407,22 @@ function moveLine(m: MoveRecord): string {
 
       <!-- 右栏:红方(棋盘下方一方) -->
       <aside class="side-pane right" data-pane="red">
+        <div
+          v-if="game.stuckSide === 'red' && game.phase === 'running'"
+          class="stuck-banner red"
+          data-testid="stuck-red"
+        >
+          <span class="sb-ico">⏱</span>
+          <b>已超时</b>
+          <button
+            class="sb-btn"
+            :disabled="retrying === 'red'"
+            data-testid="retry-red"
+            @click="onRetry('red')"
+          >
+            {{ retrying === 'red' ? '重试中…' : '重试' }}
+          </button>
+        </div>
         <ThoughtPanel
           side="red"
           name="红方"
@@ -888,5 +961,64 @@ function moveLine(m: MoveRecord): string {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+/* 裁判打回 toast(顶部居中浮动,3s 自动消失) */
+.referee-toast {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid rgba(219, 155, 59, 0.6);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  border-radius: 10px;
+  padding: 9px 16px;
+  max-width: min(560px, calc(100vw - 32px));
+}
+.referee-toast .rt-ico {
+  color: var(--amber);
+  font-weight: 700;
+}
+/* 超时挂起条(对应方侧栏顶部):已超时 + 重试 */
+.stuck-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  border-radius: 10px;
+  padding: 8px 12px;
+  border: 1px solid rgba(219, 155, 59, 0.5);
+  background: rgba(219, 155, 59, 0.1);
+  color: var(--ink);
+}
+.stuck-banner .sb-ico {
+  font-size: 15px;
+}
+.stuck-banner b {
+  color: var(--amber);
+  letter-spacing: 0.1em;
+}
+.stuck-banner .sb-btn {
+  margin-left: auto;
+  appearance: none;
+  border: 1px solid var(--amber);
+  background: var(--amber);
+  color: #241a10;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.stuck-banner .sb-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 </style>

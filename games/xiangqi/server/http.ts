@@ -334,6 +334,7 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
       winner: winnerOf(r),
       reason: reasonOf(r),
       totalCostUsd: r.arena.totalCost,
+      stuck: r.arena.stuckSide ?? null, // 超时挂起方(重试超限后等手动重试);null = 未挂起
       createdAt: r.createdAt,
     });
   });
@@ -388,6 +389,25 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     }
     await r.arena.step(); // 请求在单半回合完成后返回,语义同步
     res.json({ id: r.id, status: r.arena.state, moveCount: r.arena.moveCount });
+  });
+
+  /* ---------- 超时挂起的手动重试(重试超限不终止,页面「重试」按钮触发) ---------- */
+  app.post('/api/games/:id/retry', (req, res) => {
+    const r = mustGame(req.params.id);
+    const body = obj<Record<string, unknown>>(req.body) ?? {};
+    const side = str(body.side);
+    if (side !== 'red' && side !== 'black') {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'body.side 必填(red|black)', '重试需指定挂起方:红色或黑色');
+    }
+    const st = r.arena.state;
+    if (st === 'finished' || st === 'idle') {
+      throw new HttpError(409, 'INVALID_STATE', `当前状态 ${st} 不可 retry`, '对局已结束,无法重试');
+    }
+    if (r.arena.stuckSide !== side) {
+      throw new HttpError(409, 'INVALID_STATE', `${side === 'red' ? '红' : '黑'}方未处于超时挂起,无需重试`, '仅超时挂起方可重试');
+    }
+    r.arena.retrySide(side);
+    res.json({ id: r.id, status: r.arena.state, stuck: null });
   });
 
   /* ---------- 404 与错误兜底 ---------- */

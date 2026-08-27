@@ -352,3 +352,53 @@ describe('useGame 断线续传', () => {
     g.controls.destroy();
   });
 });
+
+/* ---------- 超时挂起 / 手动重试 / 当前思考清理 ---------- */
+
+describe('useGame 超时挂起 / 重试 / 当前思考清理', () => {
+  it('timeout 事件 → stuckSide=该方;该方成功出谱(move) → stuckSide 清空', () => {
+    const { factory, sockets } = makeFactory();
+    const g = useGame('g1', { wsFactory: factory });
+    sockets[0]!.onmessage({ data: frame(1, beginEv()) });
+    sockets[0]!.onmessage({ data: frame(2, { seq: 2, ts: 't', type: 'timeout', side: 'red' }) });
+    expect(g.stuckSide).toBe('red');
+    sockets[0]!.onmessage({ data: frame(3, moveEv({ seq: 3, turn: 'red', move: { from: 'h3', to: 'e3' } })) });
+    expect(g.stuckSide).toBeNull();
+    g.controls.destroy();
+  });
+
+  it('controls.retry(side) → POST /:id/retry body {side},成功清 stuckSide', async () => {
+    const calls: string[] = [];
+    const { factory, sockets } = makeFactory();
+    const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith('/retry')) calls.push(`${u}:${String(init?.body)}`);
+      return new Response(JSON.stringify({ id: 'g1', status: 'running', stuck: null }), { status: 200 });
+    });
+    const g = useGame('g1', { wsFactory: factory, fetcher: fetcher as unknown as typeof fetch });
+    sockets[0]!.onmessage({ data: frame(1, beginEv()) });
+    sockets[0]!.onmessage({ data: frame(2, { seq: 2, ts: 't', type: 'timeout', side: 'black' }) });
+    expect(g.stuckSide).toBe('black');
+    await g.controls.retry('black');
+    expect(calls).toEqual(['/api/games/g1/retry:{"side":"black"}']);
+    expect(g.stuckSide).toBeNull();
+    g.controls.destroy();
+  });
+
+  it('需求 3:新一回合首个流式块到达前,先清掉上一回合「当前」文本(不粘连)', () => {
+    const { factory, sockets } = makeFactory();
+    const g = useGame('g1', { wsFactory: factory });
+    sockets[0]!.onmessage({ data: frame(1, beginEv()) });
+    // red 第一回合:流式累积 → 落子(带最终 analysis)
+    sockets[0]!.onmessage({ data: frame(2, { seq: 2, ts: 't', type: 'player-message', side: 'red', phase: 'thought', content: '第一回合深思' }) });
+    expect(g.liveThoughts.red).toBe('第一回合深思');
+    sockets[0]!.onmessage({ data: frame(3, moveEv({ seq: 3, turn: 'red', move: { from: 'h3', to: 'e3' }, analysis: '第一回合终稿' })) });
+    expect(g.liveThoughts.red).toBe('第一回合终稿');
+    // red 第二回合:新流式块先清旧(不得「第一回合终稿第二回合」粘连)
+    sockets[0]!.onmessage({ data: frame(4, { seq: 4, ts: 't', type: 'player-message', side: 'red', phase: 'thought', content: '第二回合' }) });
+    expect(g.liveThoughts.red).toBe('第二回合');
+    sockets[0]!.onmessage({ data: frame(5, { seq: 5, ts: 't', type: 'player-message', side: 'red', phase: 'thought', content: '思考续' }) });
+    expect(g.liveThoughts.red).toBe('第二回合思考续');
+    g.controls.destroy();
+  });
+});

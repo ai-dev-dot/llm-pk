@@ -128,6 +128,8 @@ export interface GameControls {
   pause: () => Promise<unknown>;
   resume: () => Promise<unknown>;
   step: () => Promise<unknown>;
+  /** 超时挂起的手动重试(对局不终止;服务端重新发起该方 LLM 请求)。 */
+  retry: (side: Side) => Promise<unknown>;
   destroy: () => void;
 }
 
@@ -188,6 +190,10 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     rejections: [] as RejectionRecord[],
     rejectCount: { red: 0, black: 0 } as Record<Side, number>,
     liveThoughts: { red: '', black: '' } as Record<Side, string>,
+    /** 该方 liveThoughts 是否已落定(上一回合的最终 analysis):下一回合首个流式块前先清空,防跨回合粘连。 */
+    thoughtSettled: { red: false, black: false } as Record<Side, boolean>,
+    /** 超时挂起方(timeout 事件;等待手动「重试」恢复);null = 未挂起。 */
+    stuckSide: null as Side | null,
     phase: 'connecting' as GamePhase,
     wsStatus: 'connecting' as WsStatus,
     turn: 'red' as Side,
@@ -263,6 +269,8 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
         });
         if (e.usage) addUsage(e.turn, e.usage, e.elapsedMs);
         if (e.analysis) state.liveThoughts[e.turn] = e.analysis;
+        state.thoughtSettled[e.turn] = true; // 该方本半回合已落定(liveThoughts 为最终版,供历史/观感)
+        if (state.stuckSide === e.turn) state.stuckSide = null; // 超时方成功出谱即恢复
         state.turn = e.turn === 'red' ? 'black' : 'red';
         refreshThinking();
         break;
@@ -273,7 +281,18 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
         break;
       }
       case 'player-message': {
-        if (e.phase === 'thought' && e.content) state.liveThoughts[e.side] += e.content;
+        if (e.phase === 'thought' && e.content) {
+          // 需求 3:新一回合该方的首个流式块到达时,先清掉上一回合遗留的「当前」文本再累积。
+          if (state.thoughtSettled[e.side]) {
+            state.liveThoughts[e.side] = '';
+            state.thoughtSettled[e.side] = false;
+          }
+          state.liveThoughts[e.side] += e.content;
+        }
+        break;
+      }
+      case 'timeout': {
+        state.stuckSide = e.side; // 该方网络重试超限,对局不终止,等待手动重试
         break;
       }
       case 'check': {
@@ -283,9 +302,8 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
       }
       case 'captured':
       case 'retry':
-      case 'timeout':
       case 'draw':
-        break; // 板面已由 move 更新;其余为信息性事件
+        break; // 板面已由 move 更新;其余为信息性事件(timeout 单独处理)
       case 'review': {
         // 赛后复盘摘要(T20):入 state.review;usage 无行棋方,只归 total 成本账。
         state.review = e;
@@ -407,12 +425,26 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     ws = null;
   }
 
+  /** 超时挂起的手动重试:POST /api/games/:id/retry { side } → 服务端解锁挂起并重新发起 LLM 请求。 */
+  function retry(side: Side): Promise<unknown> {
+    return fetcher(`/api/games/${gameId}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ side }),
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(await readError(res));
+      state.stuckSide = null;
+      return res.json();
+    });
+  }
+
   connect();
 
   const controls: GameControls = {
     pause: () => postControl('pause'),
     resume: () => postControl('resume'),
     step: () => postControl('step'),
+    retry,
     destroy,
   };
   // 直接在 reactive 上挂 controls(不 spread,否则丢失响应性),返回同一代理对象。
@@ -430,6 +462,8 @@ export interface UseGameState {
   rejections: RejectionRecord[];
   rejectCount: Record<Side, number>;
   liveThoughts: Record<Side, string>;
+  thoughtSettled: Record<Side, boolean>;
+  stuckSide: Side | null;
   phase: GamePhase;
   wsStatus: WsStatus;
   turn: Side;

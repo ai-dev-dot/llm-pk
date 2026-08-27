@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import WebSocket from 'ws';
 import request from 'supertest';
 import { createXiangqiServer, type GameRecord, type ResolvedSide, type ServerDefaults } from './http';
-import type { Player, MoveChoice } from './arena';
+import { NetworkError, type Player, type MoveChoice } from './arena';
 import type { ReviewClient, ReviewPayload } from './review';
 import type { BeginEvent, GameEvent, ReviewEvent } from './game-log';
 import type { ArchivedGame } from './game-archive';
@@ -995,7 +995,7 @@ describe('GET /api/logs 与空 body 回落 config', () => {
     try {
       const res = await request(srv.server).post('/api/games').send({});
       const id = res.body.id as string;
-      // 空脚本 → 立即打回超限 → arena 判和收尾(illegal-moves,双方均超限)
+      // 空脚本(move=undefined)→ 引擎解析抛错 → arena 兜底 internal-error 以 draw 收尾 —— 验证磁盘终局展示
       await waitFor(() => {
         const a = srv.registry.get(id);
         return a !== undefined && a.state === 'finished';
@@ -1047,6 +1047,73 @@ describe('GET /api/logs 与空 body 回落 config', () => {
       const badRep = await request(srv.server).get(`/api/games/${badId}/replay`);
       const badBegin = (badRep.body.events as GameEvent[]).find((e) => e.type === 'begin') as BeginEvent;
       expect(badBegin.rules?.thinkingMode).toBe('off');
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('POST /:id/retry:超时挂起方重试解锁续走(对局不终止);未挂起/已结束方 409', async () => {
+    const cfg: ServerDefaults = {
+      models: {
+        'glm-a': { base_url: 'https://cfg.anthropic.com', api_key: 'sk-cfg', model: 'glm-model' },
+        'kimi-b': { base_url: 'https://cfg.anthropic.com', api_key: 'sk-cfg', model: 'kimi-model' },
+      },
+      red: { use: 'glm-a' },
+      black: { use: 'kimi-b' },
+    };
+    let redCalls = 0;
+    const srv = await startServer(
+      (side) =>
+        side === 'red'
+          ? {
+              side,
+              model: 'fake-red',
+              async pickMove() {
+                redCalls++;
+                if (redCalls <= 4) throw new NetworkError('持续不可用'); // 原调 + 自动退避 3 次用尽 → 挂起
+                return { analysis: 'x', move: 'a4-a5' };
+              },
+            }
+          : scriptPlayer('black', ['i7-i6']),
+      undefined,
+      cfg,
+    );
+    try {
+      const res = await request(srv.server).post('/api/games').send({ config: { maxTotalMoves: 2 } });
+      const id = (res.body as { id: string }).id;
+      const getGame = async () => (await request(srv.server).get(`/api/games/${id}`)).body as {
+        status: string;
+        stuck: string | null;
+        reason?: string;
+      };
+      // waitFor 的 cond 需同步(waitFor 对 Promise 永远 truthy);异步轮询单独实现
+      const poll = async (cond: () => Promise<boolean>, timeoutMs = 5000): Promise<void> => {
+        const t0 = Date.now();
+        for (;;) {
+          if (await cond()) return;
+          if (Date.now() - t0 > timeoutMs) throw new Error('poll 超时');
+          await sleep(5);
+        }
+      };
+
+      // 等待红方进入超时挂起(stuck=red);对局不终止(status 仍 running)
+      await poll(async () => (await getGame()).stuck === 'red');
+      const stuck = await getGame();
+      expect(stuck.status).toBe('running');
+
+      // 未挂起方重试 → 409;body 缺 side → 400
+      expect((await request(srv.server).post(`/api/games/${id}/retry`).send({ side: 'black' })).status).toBe(409);
+      expect((await request(srv.server).post(`/api/games/${id}/retry`).send({})).status).toBe(400);
+
+      // 挂起方重试 → 200 解锁 → 续走到步数上限正常收尾
+      const ok = await request(srv.server).post(`/api/games/${id}/retry`).send({ side: 'red' });
+      expect(ok.status).toBe(200);
+      await poll(async () => (await getGame()).status === 'finished');
+      expect((await getGame()).reason).toBe('draw-max-moves');
+      expect(redCalls).toBe(5);
+
+      // 对局已结束再重试 → 409
+      expect((await request(srv.server).post(`/api/games/${id}/retry`).send({ side: 'red' })).status).toBe(409);
     } finally {
       await srv.dispose();
     }

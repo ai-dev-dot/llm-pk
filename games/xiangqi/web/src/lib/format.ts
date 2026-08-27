@@ -39,7 +39,7 @@ export function fmtReason(reason: string): string {
   const map: Record<string, string> = {
     checkmate: '絕殺',
     stalemate: '困毙',
-    'illegal-moves': '打回超限判负',
+    'illegal-moves': '打回超过上限判负',
     timeout: '网络超时判负',
     'internal-error': '对局异常终止',
     'draw-aborted': '强制中止',

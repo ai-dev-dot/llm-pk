@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Arena, NetworkError, PlayerCancelled, type ArenaConfig, type Player } from './arena';
 import { GameRegistry } from './game-registry';
-import type { FinishEvent, GameEvent, IllegalAttemptEvent, MoveEvent, RetryEvent } from './game-log';
+import type { FinishEvent, GameEvent, IllegalAttemptEvent, MoveEvent, RetryEvent, TimeoutEvent } from './game-log';
 import type { Side } from '../engine/types';
 
 /* ---------- 工具 ---------- */
@@ -25,6 +25,15 @@ const lastOfType = <T extends GameEvent>(ev: GameEvent[], t: T['type']): T | und
 const asMoves = (ev: GameEvent[]) => ev.filter((e): e is MoveEvent => e.type === 'move').map((e) => e.move);
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** 轮询等待条件成立(超时抛错);供「不 finish 的挂起态」测试用。 */
+async function waitUntil(cond: () => boolean, timeoutMs = 3000): Promise<void> {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > timeoutMs) throw new Error('waitUntil 超时');
+    await sleep(10);
+  }
+}
 
 /** 按侧脚本化走法 Player:string[] 循环消费(可供多步往复局面),或 (side)=>move 函数。 */
 function scriptPlayer(side: Side, script: string[] | ((side: Side) => string)): Player {
@@ -54,6 +63,7 @@ function baseArena(gameId = 'g-test', over: Partial<ArenaConfig> = {}) {
 describe('Arena 打回循环与判负', () => {
   it('同一回合连续 3 次非法 → finish reason illegal-moves,winner=对方,pre/post 分阶段', async () => {
     const arena = baseArena('g1', {
+      rules: { illegalAttemptsLimit: 3 },
       red: { player: { side: 'red', pickMove: async () => ({ analysis: 'x', move: '这不合法' }) } },
       black: { player: { side: 'black', pickMove: async () => ({ analysis: 'x', move: '从不调用' }) } },
     });
@@ -79,6 +89,7 @@ describe('Arena 打回循环与判负', () => {
 
   it('B2:模型返回空 move(响应缺 tool_use)→ 走打回循环,超限 illegal-moves 判负(不再 internal-error 平局)', async () => {
     const arena = baseArena('g-b2', {
+      rules: { illegalAttemptsLimit: 3 },
       red: { player: { side: 'red', pickMove: async () => ({ analysis: '模型未按工具输出', move: '' }) } },
       black: { player: { side: 'black', pickMove: async () => ({ analysis: 'x', move: '从不调用' }) } },
     });
@@ -98,6 +109,7 @@ describe('Arena 打回循环与判负', () => {
   it('格式失败与非法共用同一打回计数器(混排 3 次同样判负)', async () => {
     const bad = ['这哪来的步', 'h9-h8', 'a1-z9']; // 解析失败 → 非法(起点无子) → 解析失败
     const arena = baseArena('g2', {
+      rules: { illegalAttemptsLimit: 3 },
       red: { player: { side: 'red', pickMove: async () => ({ analysis: 'x', move: bad.shift() ?? '非法' }) } },
       black: { player: scriptPlayer('black', ['i7-i6']) },
     });
@@ -109,6 +121,35 @@ describe('Arena 打回循环与判负', () => {
     const fin = lastFinish(events)!;
     expect(fin.reason).toBe('illegal-moves');
     expect(fin.ruleViolations.red).toEqual({ pre: 1, post: 2 });
+  });
+
+  it('打回不达上限(默认 10)不判负:持续 illegal-attempt 留痕,出合法步后正常收尾', async () => {
+    let i = 0;
+    const arena = baseArena('g-lenient', {
+      rules: { maxTotalMoves: 2 },
+      red: {
+        player: {
+          side: 'red',
+          async pickMove() {
+            i++;
+            if (i <= 5) return { analysis: 'x', move: 'bad-move' };
+            return { analysis: 'x', move: 'a4-a5' };
+          },
+        },
+      },
+      black: { player: scriptPlayer('black', ['i7-i6']) },
+    });
+    const events = collect(arena);
+
+    await arena.start();
+
+    expect(i).toBe(6); // 5 次打回 + 第 6 次出合法步,不判负
+    const illegal = events.filter((e): e is IllegalAttemptEvent => e.type === 'illegal-attempt');
+    expect(illegal).toHaveLength(5);
+    expect(illegal.map((e) => e.round)).toEqual([1, 2, 3, 4, 5]);
+    expect(illegal[4]!.violations).toEqual({ pre: 1, post: 4 }); // 留痕计数(pre 首次打回 / post 重犯)
+    const fin = lastFinish(events)!;
+    expect(fin.reason).toBe('draw-max-moves'); // 由步数上限正常收尾,绝无 illegal-moves
   });
 });
 
@@ -326,16 +367,18 @@ describe('Arena 网络重试', () => {
     expect(errs).toHaveLength(1);
   });
 
-  it('网络重试超限 → 和棋收尾 reason draw-network(默认 3 次退避;网络不判胜负)', async () => {
-    const retryCauses: string[] = [];
+  it('网络重试超限 → 不终止:发 timeout、挂起等手动重试;retrySide 恢复后续走(不再 draw-network)', async () => {
+    let callsRed = 0;
     const arena = baseArena('g9', {
+      rules: { maxTotalMoves: 2 },
       networkRetryBaseDelayMs: 0,
       red: {
         player: {
           side: 'red',
           async pickMove() {
-            retryCauses.push('attempt');
-            throw new NetworkError('持续不可用');
+            callsRed++;
+            if (callsRed <= 4) throw new NetworkError('持续不可用');
+            return { analysis: 'x', move: 'a4-a5' };
           },
         },
       },
@@ -343,14 +386,26 @@ describe('Arena 网络重试', () => {
     });
     const events = collect(arena);
 
-    await arena.start();
+    const startP = arena.start(); // 挂起阶段不 finish,不可直接 await
+    await waitUntil(() => arena.stuckSide === 'red');
 
-    expect(arena.state).toBe('finished');
-    expect(retryCauses).toHaveLength(4); // 原调用 + 3 次重试
+    // 已挂起:timeout 事件落地,state 仍是 running(对局不终止)
+    const tos = events.filter((e): e is TimeoutEvent => e.type === 'timeout');
+    expect(tos).toHaveLength(1);
+    expect(tos[0]!.side).toBe('red');
     const retries = events.filter((e): e is RetryEvent => e.type === 'retry');
-    expect(retries.map((e) => e.attempt)).toEqual([1, 2, 3]);
-    expect(lastFinish(events)!.reason).toBe('draw-network');
-    expect(lastFinish(events)!.winner).toBe('draw'); // 网络问题→和棋,非一方胜
+    expect(retries.map((e) => e.attempt)).toEqual([1, 2, 3]); // 自动退避 3 次用尽
+    expect(arena.state).toBe('running');
+    expect(arena.stuckSide).toBe('red');
+
+    // 手动重试:解锁挂起,红方按新尝试序列重新发起(第 5 次成功)→ 步数上限正常收尾
+    expect(arena.retrySide('red')).toBe(true);
+    expect(arena.retrySide('black')).toBe(false); // 未挂起方不可重试
+    await startP;
+    expect(arena.state).toBe('finished');
+    expect(lastFinish(events)!.reason).toBe('draw-max-moves');
+    expect(callsRed).toBe(5);
+    expect(arena.stuckSide).toBeUndefined();
   });
 
   it('pause 中止飞行请求(PlayerCancelled)→ 不判负;resume 后回合从零重走', async () => {
