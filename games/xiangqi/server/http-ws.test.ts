@@ -25,6 +25,7 @@ import { createXiangqiServer, type GameRecord, type ResolvedSide, type ServerDef
 import type { Player, MoveChoice } from './arena';
 import type { ReviewClient, ReviewPayload } from './review';
 import type { GameEvent, ReviewEvent } from './game-log';
+import type { ArchivedGame } from './game-archive';
 import type { Side } from '../engine/types';
 
 /* ---------- 工具 ---------- */
@@ -940,4 +941,73 @@ function gatedLivePlayer(
   };
   return { player, releaseNext };
 }
+
+describe('GET /api/logs 与空 body 回落 config', () => {
+  it('POST 空 body → 201 回落 config profile(归档 id 含红/黑 profile 名);GET /api/logs 列出该局', async () => {
+    const cfg: ServerDefaults = {
+      models: {
+        'glm-a': { base_url: 'https://cfg.anthropic.com', api_key: 'sk-cfg', model: 'glm-model' },
+        'kimi-b': { base_url: 'https://cfg.anthropic.com', api_key: 'sk-cfg', model: 'kimi-model' },
+      },
+      red: { use: 'glm-a' },
+      black: { use: 'kimi-b' },
+    };
+    // 闸门玩家:pickMove 阻塞等待 release → 对局稳定停在 running(否则脚本几毫秒内即终局)。
+    const redDoor = gatedLivePlayer('red', ['a4-a5', 'i7-i6'], ['先手强开']);
+    const blackDoor = gatedLivePlayer('black', ['a4-a5', 'i7-i6'], ['稳守']);
+    const srv = await startServer((side) => (side === 'red' ? redDoor.player : blackDoor.player), undefined, cfg);
+    try {
+      const res = await request(srv.server).post('/api/games').send({});
+      expect(res.status).toBe(201);
+      const id = res.body.id as string;
+      expect(id).toMatch(/glm-a-pk-kimi-b/); // profile 名进入归档 id
+      expect(JSON.stringify(res.body)).not.toContain('sk-cfg'); // 密钥不外发
+
+      const detail = await request(srv.server).get(`/api/games/${id}`);
+      expect(detail.body.red.model).toBe('glm-model');
+      expect(detail.body.black.model).toBe('kimi-model');
+
+      const list = await request(srv.server).get('/api/logs');
+      expect(list.status).toBe(200);
+      const g = (list.body.games as ArchivedGame[]).find((x) => x.id === id);
+      expect(g).toBeTruthy();
+      expect(g?.red.model).toBe('glm-model');
+      expect(g?.black.model).toBe('kimi-model');
+      expect(g?.status).toBe('running');
+      expect(typeof g?.createdAt).toBe('string');
+      expect(typeof g?.updatedAt).toBe('string');
+      expect(g?.moveCount).toBeGreaterThanOrEqual(0);
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('终局写入后,GET /api/logs 该局 status=finished 且带 winner/reason', async () => {
+    const cfg: ServerDefaults = {
+      models: {
+        'glm-a': { base_url: 'https://cfg.anthropic.com', api_key: 'sk-cfg', model: 'glm-model' },
+        'kimi-b': { base_url: 'https://cfg.anthropic.com', api_key: 'sk-cfg', model: 'kimi-model' },
+      },
+      red: { use: 'glm-a' },
+      black: { use: 'kimi-b' },
+    };
+    const srv = await startServer((side) => scriptPlayer(side, []), undefined, cfg);
+    try {
+      const res = await request(srv.server).post('/api/games').send({});
+      const id = res.body.id as string;
+      // 空脚本 → 立即打回超限 → arena 判和收尾(illegal-moves,双方均超限)
+      await waitFor(() => {
+        const a = srv.registry.get(id);
+        return a !== undefined && a.state === 'finished';
+      });
+      const list = await request(srv.server).get('/api/logs');
+      const g = (list.body.games as ArchivedGame[]).find((x) => x.id === id);
+      expect(g?.status).toBe('finished');
+      expect(g?.winner).toBe('draw');
+      expect(g?.reason).toBeTruthy();
+    } finally {
+      await srv.dispose();
+    }
+  });
+});
 

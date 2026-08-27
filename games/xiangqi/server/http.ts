@@ -28,6 +28,7 @@ import { GameRegistry } from './game-registry';
 import type { GameEvent, GameLogSink, GameRulesSnapshot } from './game-log';
 import { appendEvent, readAllEvents } from './game-log';
 import { pickNextSeq, slugifySideLabel, yyyymmdd } from './game-id';
+import { scanLogs } from './game-archive';
 import { AnthropicPlayer, DEFAULT_TOKENS_PER_M } from './models/anthropic';
 import type { TokensPerM } from './models/anthropic';
 import type { Side } from '../engine/types';
@@ -340,6 +341,19 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     res.json({ id: r.id, events });
   });
 
+  /* ---------- GET /api/logs(磁盘历史对局,归档命名配套) ---------- */
+  app.get('/api/logs', (_req, res) => {
+    const list = scanLogs(logDir);
+    // 内存活跃局覆盖实时状态/步数(进行中/暂停由 arena 判定;终局以磁盘 finish 为准)。
+    for (const g of list) {
+      const rec = store.get(g.id);
+      if (!rec || rec.arena.state === 'finished' || rec.arena.state === 'idle') continue;
+      g.status = rec.arena.state === 'paused' ? 'paused' : 'running';
+      g.moveCount = rec.arena.moveCount;
+    }
+    res.json({ games: list });
+  });
+
   /* ---------- 控制端点 ---------- */
   app.post('/api/games/:id/pause', (req, res) => {
     const r = mustGame(req.params.id);
@@ -443,8 +457,8 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
   }
 
   function resolveSide(side: Side, raw: unknown, d: ServerDefaults, reqTimeoutMs?: number): ResolvedSide {
-    const b = obj<Record<string, unknown>>(raw);
-    if (!b) throw new HttpError(400, 'VALIDATION_ERROR', `body.${side} 必填`);
+    // 首页「开始对局」不传红/黑 → 回落 config.json(red.use/black.use profile)。
+    const b = obj<Record<string, unknown>>(raw) ?? {};
     const defSide = (side === 'red' ? d.red : d.black) ?? {};
 
     // ① 按名引用 profile:请求体 use 优先,回落 config.<side>.use。
