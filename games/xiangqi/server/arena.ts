@@ -16,8 +16,9 @@ import { DEFAULT_CONTEXT_BUDGET_TOKENS, SideSession } from './session';
  * - 回合仲裁:行棋方 → 会话装配上下文 → `player.pickMove` → `game.resolve` → 拒则打回/判负,
  *   合法则 `game.apply` 落子并 `game.classify` 判定结束/继续;
  * - 状态机:`idle → running ⇄(pause/resume/step)paused → finished`(pause/resume 幂等);
- * - 守卫:打回上限(`illegal-moves`)、网络重试超限(`timeout`)、步数上限(`draw-max-moves`)、
- *   成本上限(`draw-cost-limit`);重复局面由 `game.classify`(history 快照)判 `draw-repeat`;
+ * - 守卫:打回上限(`illegal-moves`)、网络重试超限(和棋收尾 `draw-network`,不判胜负)、
+ *   步数上限(`draw-max-moves`)、成本上限(`draw-cost-limit`);重复局面由 `game.classify`(history 快照)判 `draw-repeat`;
+ * - 暂停冻结:`pause()` 立即中止飞行中请求(`player.cancelPending`),回合待 resume 从零重走,不空等、不判负;
  * - 每局开始 `game.clearCache()`,所有经 `appendEvent` 的事件即广播(EventEmitter + onEvent 回调)。
  *
  * 注入边界:Player 接口与 Game 均为依赖注入,便于 mock 测试;
@@ -74,6 +75,17 @@ export function isNetworkError(err: unknown): boolean {
   if (err instanceof Error && (err as { isNetwork?: boolean }).isNetwork === true) return true;
   if ((err as { cause?: unknown } | null)?.cause === 'network') return true;
   return false;
+}
+
+/**
+ * 回合被外部中止(arena.pause 调用 player.cancelPending 触发)。
+ * 与网络超时(timeout)区分:不代表失败/胜负——暂停仅中止飞行请求,回合待 resume 后从零重走。
+ */
+export class PlayerCancelled extends Error {
+  constructor(message = '回合被暂停中止') {
+    super(message);
+    this.name = 'PlayerCancelled';
+  }
 }
 
 export interface ArenaPlayerConfig {
@@ -252,9 +264,16 @@ export class Arena<S = Board, M = Move> {
     return startP;
   }
 
-  /** 幂等暂停:仅 running→paused;步内请求发出后于回合边界生效。 */
+  /**
+   * 幂等暂停:仅 running→paused;同时中止当前飞行中的 LLM 请求(cancelPending),
+   * 暂停立即生效——不再空等到请求超时、不再消耗重试预算;被中止的回合不回滚、不计胜负,resume 后从零重走。
+   */
   pause(): void {
-    if (this.state_ === 'running') this.state_ = 'paused';
+    if (this.state_ === 'running') {
+      this.state_ = 'paused';
+      const p = this.cfg[this.turn_].player as { cancelPending?: () => void };
+      p.cancelPending?.();
+    }
   }
 
   /** 幂等恢复:paused→running 并唤醒事件循环。 */
@@ -391,7 +410,11 @@ export class Arena<S = Board, M = Move> {
     }
   }
 
-  /** 网络重试:指数退避 `retries` 次;超限判该方负 `reason: timeout`。 */
+  /**
+   * 网络重试:指数退避 `retries` 次。超限**不判胜负**——网络问题不决定棋力,以和棋收尾
+   * `winner: 'draw', reason: 'draw-network'`。pause 中止的回合(PlayerCancelled)上抛,
+   * 由事件循环在 resume 后重新走。**
+   */
   private async pickMoveWithRetry(side: Side): Promise<MoveChoice> {
     const retries = this.cfg.rules?.networkRetries ?? DEFAULT_NETWORK_RETRIES;
     const baseMs = this.cfg.networkRetryBaseDelayMs ?? DEFAULT_NETWORK_RETRY_BASE_MS;
@@ -400,9 +423,10 @@ export class Arena<S = Board, M = Move> {
       try {
         return await this.cfg[side].player.pickMove(this.currentMoveContext(side));
       } catch (err) {
+        if (err instanceof PlayerCancelled) throw err; // 暂停中止:不重试、不判负
         if (!isNetworkError(err)) throw err;
         if (attempt >= retries) {
-          this.finishGame({ winner: this.game.opposite(side), reason: 'timeout' });
+          this.finishGame({ winner: 'draw', reason: 'draw-network' });
           return { analysis: '', move: '' };
         }
         attempt++;
@@ -418,24 +442,30 @@ export class Arena<S = Board, M = Move> {
 
   private async drive(): Promise<void> {
     try {
-      for (;;) {
-        while (this.state_ === 'paused' && !this.singleStep_) {
-          await this.waitKick();
+      loop: for (;;) {
+        try {
+          while (this.state_ === 'paused' && !this.singleStep_) {
+            await this.waitKick();
+          }
+          if (this.finishRequested_) break loop;
+          const wasStep = this.state_ === 'paused' && this.singleStep_;
+          if (wasStep) this.singleStep_ = false;
+          const turn = this.playTurn();
+          this.turnPromise = turn;
+          await turn;
+          this.resolveStep();
+          if (this.finishRequested_) break loop;
+          if (wasStep) {
+            // 单步结束:除非步内被 resume(仍 running),回去维持暂停态
+            if (this.state_ !== 'running') this.state_ = 'paused';
+            continue loop;
+          }
+          // running:回到循环顶,若步内 pause() 过则在此停留
+        } catch (err) {
+          // 暂停中止的回合(PlayerCancelled):不判负、不重试,回到循环顶等待 resume 后从零重走
+          if (err instanceof PlayerCancelled) continue loop;
+          throw err;
         }
-        if (this.finishRequested_) break;
-        const wasStep = this.state_ === 'paused' && this.singleStep_;
-        if (wasStep) this.singleStep_ = false;
-        const turn = this.playTurn();
-        this.turnPromise = turn;
-        await turn;
-        this.resolveStep();
-        if (this.finishRequested_) break;
-        if (wasStep) {
-          // 单步结束:除非步内被 resume(仍 running),回去维持暂停态
-          if (this.state_ !== 'running') this.state_ = 'paused';
-          continue;
-        }
-        // running:回到循环顶,若步内 pause() 过则在此停留
       }
     } catch (err) {
       this.abortWithError(err);

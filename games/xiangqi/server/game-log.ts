@@ -94,7 +94,7 @@ export interface DrawEvent extends BaseEvent {
 export interface FinishEvent extends BaseEvent {
   type: 'finish';
   winner: Side | 'draw';
-  reason: string; // 'checkmate' | 'stalemate' | 'illegal-moves' | 'timeout' | 'draw-*' | ...
+  reason: string; // 'checkmate' | 'stalemate' | 'illegal-moves' | 'timeout' | 'draw-*' | ...(网络重试超限=draw-network,不判胜负)
   ruleViolations: { red: RuleViolations; black: RuleViolations };
 }
 

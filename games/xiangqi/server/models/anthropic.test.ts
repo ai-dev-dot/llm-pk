@@ -13,7 +13,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AnthropicPlayer, DEFAULT_TOKENS_PER_M, estimateCostUsd } from './anthropic';
-import { NetworkError, type MoveContext } from '../arena';
+import { NetworkError, PlayerCancelled, type MoveContext } from '../arena';
 
 /* ---------- 工具 ---------- */
 
@@ -304,6 +304,26 @@ describe('网络错误', () => {
     expect(err).toBeInstanceOf(NetworkError);
     expect((err as NetworkError & { retryable?: boolean }).retryable).toBe(true);
     expect((err as Error).message).toMatch(/timeout/i);
+  });
+
+  it('cancelPending(pause 中止飞行请求)→ PlayerCancelled,而非超时 NetworkError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise<Response>((_, reject) => {
+            init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+          }),
+      ),
+    );
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', timeoutMs: 100000 });
+    const pending = p.pickMove(fakeCtx).catch((e: unknown) => e);
+    await vi.waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled()); // 请求已发出(controller 已挂上)
+
+    p.cancelPending(); // arena.pause 中止:区分「暂停中止」vs「超时」
+    const err = await pending;
+    expect(err).toBeInstanceOf(PlayerCancelled);
+    expect(err).not.toBeInstanceOf(NetworkError);
   });
 
   it('5xx → NetworkError(retryable=true)', async () => {

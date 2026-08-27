@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Arena, NetworkError, type ArenaConfig, type Player } from './arena';
+import { Arena, NetworkError, PlayerCancelled, type ArenaConfig, type Player } from './arena';
 import { GameRegistry } from './game-registry';
 import type { FinishEvent, GameEvent, IllegalAttemptEvent, MoveEvent, RetryEvent } from './game-log';
 import type { Side } from '../engine/types';
@@ -326,7 +326,7 @@ describe('Arena 网络重试', () => {
     expect(errs).toHaveLength(1);
   });
 
-  it('网络重试超限 → 判该方负 reason timeout(默认 3 次退避)', async () => {
+  it('网络重试超限 → 和棋收尾 reason draw-network(默认 3 次退避;网络不判胜负)', async () => {
     const retryCauses: string[] = [];
     const arena = baseArena('g9', {
       networkRetryBaseDelayMs: 0,
@@ -349,8 +349,65 @@ describe('Arena 网络重试', () => {
     expect(retryCauses).toHaveLength(4); // 原调用 + 3 次重试
     const retries = events.filter((e): e is RetryEvent => e.type === 'retry');
     expect(retries.map((e) => e.attempt)).toEqual([1, 2, 3]);
-    expect(lastFinish(events)!.reason).toBe('timeout');
-    expect(lastFinish(events)!.winner).toBe('black');
+    expect(lastFinish(events)!.reason).toBe('draw-network');
+    expect(lastFinish(events)!.winner).toBe('draw'); // 网络问题→和棋,非一方胜
+  });
+
+  it('pause 中止飞行请求(PlayerCancelled)→ 不判负;resume 后回合从零重走', async () => {
+    let redCalls = 0;
+    let gateReject: ((err: unknown) => void) | undefined;
+    const red: Player = {
+      side: 'red',
+      async pickMove() {
+        redCalls++;
+        if (redCalls === 1) {
+          // 第一次:挂起(请求飞行中);由 cancelPending 注入中止(模拟真实 player 被 abort 后抛 PlayerCancelled)
+          await new Promise<void>((_res, rej) => {
+            gateReject = rej;
+          });
+          throw new PlayerCancelled('回合被暂停中止');
+        }
+        return { analysis: 'resume 后重走', move: 'h3-e3' };
+      },
+      cancelPending() {
+        // pause() 调用点:中止飞行请求 → 挂起中的 pickMove 抛 PlayerCancelled
+        gateReject?.(new PlayerCancelled('回合被暂停中止'));
+      },
+    } as unknown as Player;
+
+    const arena = baseArena('g-pz', {
+      red: { player: red },
+      black: { player: scriptPlayer('black', ['i7-i6']) },
+      rules: { maxTotalMoves: 2 }, // 红黑各一步后 draw-max-moves,局自然收尾
+    });
+    const events = collect(arena);
+
+    const waitFor = async (cond: () => boolean, ms = 2000): Promise<void> => {
+      const t0 = Date.now();
+      while (!cond()) {
+        if (Date.now() - t0 > ms) throw new Error('waitFor 超时');
+        await sleep(5);
+      }
+    };
+
+    const started = arena.start();
+    await waitFor(() => redCalls >= 1); // 红已挂起(飞行中)
+
+    arena.pause(); // → cancelPending → PlayerCancelled → drive 暂停等待
+    await waitFor(() => arena.state === 'paused');
+    expect(lastFinish(events)).toBeUndefined(); // 被中止的回合未判负
+    expect(redCalls).toBe(1);
+    expect(events.filter((e) => e.type === 'move')).toHaveLength(0); // 挂起回合未落子
+
+    arena.resume(); // 回合从零重走:红 h3-e3 → 黑 i7-i6 → maxTotalMoves 收尾
+    await started;
+    expect(arena.state).toBe('finished');
+    const moves = events.filter((e): e is MoveEvent => e.type === 'move');
+    expect(moves.map((m) => m.move.from)).toEqual(['h3', 'i7']);
+    expect(moves.map((m) => m.turn)).toEqual(['red', 'black']);
+    // 收尾是步数上限和棋,而非网络超时判负
+    expect(lastFinish(events)!.reason).toBe('draw-max-moves');
+    expect(redCalls).toBe(2); // resume 后红只重走一次
   });
 });
 

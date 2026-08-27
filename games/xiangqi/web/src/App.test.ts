@@ -85,8 +85,12 @@ describe('App 全流程冒烟', () => {
     await flushPromises();
 
     expect(w.findAll('.pc')).toHaveLength(32); // 棋盘点数不变(炮平移,无吃子)
-    expect(w.text()).toContain('炮二平五'); // 记谱履历
     expect(w.text()).toContain('第1回合'); // 红方思考卡:已落子历史标「第1回合」(非「当前」)
+
+    // 履历默认收起(不占棋盘);点顶部「对局履历」按钮展开可见着法
+    await w.get('[data-testid="toggle-log"]').trigger('click');
+    await flushPromises();
+    expect(w.get('[data-testid="log-panel"]').text()).toContain('炮二平五');
     expect(w.get('[data-testid="meta-first"]').text()).toBe('红方'); // 先手(来自 begin.first)
     expect(w.get('[data-testid="meta-round"]').text()).toBe('1'); // 回合 1
     expect(w.get('[data-testid="meta-half"]').text()).toBe('1'); // 步数 1

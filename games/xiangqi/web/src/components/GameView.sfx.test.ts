@@ -74,6 +74,50 @@ describe('GameView 音效接线 B5', () => {
     expect(play).toHaveBeenLastCalledWith('finish');
   });
 
+  it('思考计时徽章:begin 后标「红方思考中」;红落子后切「黑方」', async () => {
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
+    const w = mount(GameView, { props: { gameId: 'g-sfx' } });
+    const ws = wsInstances[0]!;
+    ws.onmessage!({ data: frame(1, beginEv()) });
+    await flushPromises();
+    expect(w.find('[data-testid="think-timer"]').exists()).toBe(true);
+    expect(w.get('[data-testid="think-timer"]').text()).toContain('红方');
+
+    ws.onmessage!({ data: frame(2, { seq: 2, ts: 't', type: 'move', turn: 'red', move: { from: 'h3', to: 'e3' }, legal: true }) });
+    await flushPromises();
+    expect(w.get('[data-testid="think-timer"]').text()).toContain('黑方');
+
+    w.unmount();
+  });
+
+  it('重开需确认:点「↺重开」先弹确认;确认才 emit restart,取消不 emit', async () => {
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
+    const w = mount(GameView, { props: { gameId: 'g-sfx' } });
+    wsInstances[0]!.onmessage!({ data: frame(1, beginEv()) });
+    await flushPromises();
+
+    await w.get('[data-testid="restart"]').trigger('click');
+    expect(w.find('[data-testid="confirm-mask"]').exists()).toBe(true);
+    expect(w.emitted('restart')).toBeUndefined(); // 未确认前不触发
+
+    await w.get('[data-testid="confirm-restart"]').trigger('click');
+    await flushPromises();
+    expect(w.emitted('restart')).toHaveLength(1); // 确认后放行
+    expect(w.find('[data-testid="confirm-mask"]').exists()).toBe(false);
+    w.unmount();
+  });
+
+  it('重开确认可取消:取消后不 emit restart', async () => {
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
+    const w = mount(GameView, { props: { gameId: 'g-sfx' } });
+    await w.get('[data-testid="restart"]').trigger('click');
+    await w.get('.confirm-actions .btn').trigger('click'); // 「取消」
+    await flushPromises();
+    expect(w.emitted('restart')).toBeUndefined();
+    expect(w.find('[data-testid="confirm-mask"]').exists()).toBe(false);
+    w.unmount();
+  });
+
   it('静音钮切换 → setMuted 真 toggle(且经手势解锁)', async () => {
     vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
     const w = mount(GameView, { props: { gameId: 'g-sfx' } });

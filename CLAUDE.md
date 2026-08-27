@@ -74,7 +74,7 @@ server/arena.ts(仲裁) ──appendEvent──► logs/*.jsonl ──GET /:id/r
 - **LLM profiles 配置**:`config.json` 用 `models: { <name>: {base_url, api_key, model, ...} }` 注册表定义任意多个可复用 LLM,`red.use`/`black.use`/`review.use` 按名引用(红黑可打不同厂商/key);请求体内联 `baseUrl/apiKey/model` 优先,表单**全空**则回落 config profile。客户端走 Anthropic Messages 协议(`/v1/messages`),国内用智谱/Kimi 的 Anthropic 兼容端点。**`max_tokens` 默认不传**(请求体省略,交端点默认;仅 profile 显式 `max_tokens` 才带)。旧扁平结构(顶层 `base_url`+`red.model`)仍兼容。解析在 `server/http.ts` 的 `resolveSide`/`resolveReview`/`resolveProfile`。
 - **分数段与事实**:`begin` 事件保留 `model` 名(评估标识,非密钥)。
 - **M0 spike 待 key**:`npm run spike:parse` 需 `config.json`(`models` profile + 红/黑 `use`,或旧扁平 `baseUrl/apiKey/model`)才跑真实解析率;无 key 时 exit 2。
-- **`finish` reason 码**是稳定字符串(`draw-repeat`/`draw-no-mating-material`/`draw-max-moves`/`draw-cost-limit`/`illegal-moves`/`timeout`/`internal-error`),前端 `web/src/lib/format.ts` 与之对齐,新增 reason 需两侧同步。
+- **`finish` reason 码**是稳定字符串(`draw-repeat`/`draw-no-mating-material`/`draw-max-moves`/`draw-cost-limit`/`draw-network`/`illegal-moves`/`timeout`/`internal-error`),前端 `web/src/lib/format.ts` 与之对齐,新增 reason 需两侧同步。**`draw-network` 仅表示网络重试超限→和棋收尾,绝不判一方输**;`timeout`(旧判负码)保留兼容但 arena 已不产生。
 - 计划与评审工件在 `docs/superpowers/{specs,plans}/`;待办见根 `TODOS.md`(批量匹配、分享链接、一键复跑等 deferred)。
 
 ## 沟通约定

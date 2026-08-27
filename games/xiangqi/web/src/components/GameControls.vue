@@ -39,18 +39,16 @@ const stepDisabled = computed(() => props.status !== 'paused');
 
 <template>
   <div class="controls" data-testid="controls">
-    <div class="ctl-row">
-      <button class="btn pri" :disabled="playDisabled" data-testid="play" @click="emit('toggle-play')">
-        {{ playLabel }}
-      </button>
-      <button class="btn" :disabled="stepDisabled" data-testid="step" title="暂停后再单步" @click="emit('step')">
-        ⏭ 单步<span class="kbd">S</span>
-      </button>
-      <button class="btn" data-testid="restart" @click="emit('restart')">↺ 重开</button>
-      <button class="btn" data-testid="mute" :title="muted ? '开启音效' : '静音'" @click="emit('toggle-mute')">
-        {{ muted ? '🔇' : '🔊' }}
-      </button>
-    </div>
+    <button class="btn pri" :disabled="playDisabled" data-testid="play" @click="emit('toggle-play')">
+      {{ playLabel }}
+    </button>
+    <button class="btn" :disabled="stepDisabled" data-testid="step" title="暂停后再单步" @click="emit('step')">
+      ⏭ 单步<span class="kbd">S</span>
+    </button>
+    <button class="btn" data-testid="restart" @click="emit('restart')">↺ 重开</button>
+    <button class="btn" data-testid="mute" :title="muted ? '开启音效' : '静音'" @click="emit('toggle-mute')">
+      {{ muted ? '🔇' : '🔊' }}
+    </button>
     <div class="seg" role="group" aria-label="速度">
       <button
         v-for="s in SPEEDS"
@@ -68,17 +66,12 @@ const stepDisabled = computed(() => props.status !== 'paused');
 <style scoped>
 .controls {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
-}
-.ctl-row {
-  display: flex;
-  gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0;
+  border: none;
+  background: none;
 }
 .btn {
   appearance: none;
@@ -87,12 +80,13 @@ const stepDisabled = computed(() => props.status !== 'paused');
   color: var(--ink);
   font-family: var(--font-body);
   font-size: 12px;
-  padding: 7px 11px;
-  border-radius: 9px;
+  padding: 5px 10px;
+  border-radius: 8px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
   transition: border-color 0.15s, background 0.15s, transform 0.05s;
 }
 .btn:hover:not(:disabled) {
@@ -114,7 +108,6 @@ const stepDisabled = computed(() => props.status !== 'paused');
   border-color: var(--red);
   color: #f6ead6;
   font-weight: 600;
-  flex: 1;
 }
 .btn.pri:hover:not(:disabled) {
   background: var(--red-dim);
@@ -126,7 +119,6 @@ const stepDisabled = computed(() => props.status !== 'paused');
 }
 .seg {
   display: flex;
-  width: 100%;
   border: 1px solid var(--line);
   border-radius: 9px;
   overflow: hidden;
@@ -140,7 +132,6 @@ const stepDisabled = computed(() => props.status !== 'paused');
   font-family: var(--font-mono);
   font-size: 12px;
   cursor: pointer;
-  flex: 1;
 }
 .seg button.on {
   background: var(--panel-2);

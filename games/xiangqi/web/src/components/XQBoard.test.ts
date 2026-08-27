@@ -91,6 +91,28 @@ describe('XQBoard', () => {
     expect(moved).toBe(node);
   });
 
+  it('走子前导动画:anim hover 渲染待动高亮圈;switch path 渲染路线与箭头', async () => {
+    const recs = recordsFromBoard(initialBoard());
+    const w = mount(XQBoard, {
+      props: {
+        pieces: recs,
+        anim: { phase: 'hover', from: { file: 7, rank: 2 }, to: { file: 4, rank: 2 }, id: 1 },
+      },
+    });
+    const hover = w.find('.anim-lead.hover-glint, .anim-lead [data-anim="hover"]');
+    expect(w.find('.anim-lead[data-anim="hover"]').exists()).toBe(true);
+    expect(w.find('.hover-glint').exists()).toBe(true); // 起子高亮圈
+
+    await w.setProps({ anim: { phase: 'path', from: { file: 7, rank: 2 }, to: { file: 4, rank: 2 }, id: 2 } });
+    expect(w.find('.anim-lead[data-anim="path"]').exists()).toBe(true);
+    expect(w.find('.path-line').exists()).toBe(true); // 路径线
+    expect(w.find('.path-arrow').exists()).toBe(true); // 箭头
+
+    await w.setProps({ anim: null });
+    expect(w.find('.anim-lead').exists()).toBe(false);
+    void hover;
+  });
+
   it('无显式 uid 的棋子仍走旧 diff 路径(兼容)', async () => {
     const p1: PieceRec = { side: 'red', type: 'rook', file: 0, rank: 0 };
     const w = mount(XQBoard, { props: { pieces: [p1] } });

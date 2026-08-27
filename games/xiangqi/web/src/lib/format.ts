@@ -39,6 +39,7 @@ export function fmtReason(reason: string): string {
     'draw-no-mating-material': '双方无进攻子力 · 和棋',
     'draw-max-moves': '步数上限 · 和棋',
     'draw-cost-limit': '成本上限 · 和棋',
+    'draw-network': '网络异常 · 对局中止(不作胜负)',
   };
   return map[reason] ?? reason;
 }

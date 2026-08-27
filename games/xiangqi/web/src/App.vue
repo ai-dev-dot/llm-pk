@@ -119,57 +119,55 @@ function restartWithConfig(cfg?: NewGameConfig): void {
 .page-header {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 14px 24px 12px;
+  gap: 10px;
+  padding: 6px 20px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(230, 180, 110, 0.04), transparent);
 }
 .seal {
-  width: 40px;
-  height: 40px;
+  width: 26px;
+  height: 26px;
   flex: none;
   background: var(--seal);
   color: #f6ead6;
   font-family: var(--font-display);
-  font-size: 24px;
+  font-size: 15px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(176, 58, 38, 0.35);
+  border-radius: 5px;
+  box-shadow: 0 1px 5px rgba(176, 58, 38, 0.35);
   font-weight: 700;
 }
 .brand {
-  line-height: 1.1;
+  line-height: 1;
 }
 .brand h1 {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: 0.12em;
+  white-space: nowrap;
 }
 .brand .brand-sub {
-  margin: 3px 0 0;
-  font-size: 12px;
-  color: var(--ink-dim);
-  letter-spacing: 0.28em;
+  display: none; /* 节省顶部空间,把位置让给对局信息 */
 }
 .hdr-right {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 .status-pill {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--ink-dim);
   border: 1px solid var(--line);
-  padding: 5px 10px;
+  padding: 4px 9px;
   border-radius: 20px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font-family: var(--font-mono);
 }
 .status-pill .beam {
@@ -195,12 +193,18 @@ function restartWithConfig(cfg?: NewGameConfig): void {
   background: var(--panel-2);
   color: var(--ink);
   font-family: var(--font-body);
-  font-size: 13px;
-  padding: 8px 14px;
-  border-radius: 9px;
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 8px;
   cursor: pointer;
+  white-space: nowrap;
 }
 .btn:hover {
   border-color: var(--ink-soft);
+}
+@media (max-width: 720px) {
+  .status-pill {
+    display: none;
+  }
 }
 </style>

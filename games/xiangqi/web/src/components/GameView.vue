@@ -7,13 +7,15 @@
 //
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import XQBoard from './XQBoard.vue';
+import type { BoardAnim } from './XQBoard.vue';
 import ThoughtPanel from './ThoughtPanel.vue';
 import ReviewPanel from './ReviewPanel.vue';
 import GameControls from './GameControls.vue';
 import { useGame, type NewGameConfig, type MoveRecord, type ThoughtEntry } from '../composables/useGame';
+import { applyMoveToPieces, initialPiecesWithUid, type UidPiece } from '../lib/replay';
 import { fmtMs, fmtRound, fmtReason } from '../lib/format';
 import { play, setMuted, unlock } from '../lib/sfx';
-import type { Side } from '../../../engine/types';
+import type { Side, Sq } from '../../../engine/types';
 
 const props = defineProps<{
   gameId: string;
@@ -80,11 +82,112 @@ onMounted(() => {
   unlockCleanup = () => window.removeEventListener('pointerdown', handler, { capture: true });
 });
 
+/* ---------- 当前思考方 + 已思考时长(100ms tick;思考方切换自动重置) ---------- */
+const thinkSide = computed<Side | null>(() =>
+  game.thinking.red ? 'red' : game.thinking.black ? 'black' : null,
+);
+const thinkElapsed = ref(0);
+let thinkTimer: ReturnType<typeof setInterval> | undefined;
+let thinkStart = 0;
+function resetThinkTimer(): void {
+  clearInterval(thinkTimer);
+  if (thinkSide.value) {
+    thinkStart = performance.now();
+    thinkElapsed.value = 0;
+    thinkTimer = setInterval(() => {
+      thinkElapsed.value = performance.now() - thinkStart;
+    }, 100);
+  }
+}
+watch(
+  () => [game.thinking.red, game.thinking.black],
+  resetThinkTimer,
+  { immediate: true },
+);
+
 onBeforeUnmount(() => {
+  destroyed = true;
   game.controls.destroy();
   clearTimeout(checkTimer);
+  clearInterval(thinkTimer);
   unlockCleanup?.();
 });
+
+/* ---------- 走子慢放(分阶段):①hover 待动子高亮闪烁 → ②path 带箭头路径高亮 → ③落子(重复 REPEAT 次) ---------- */
+const REPEAT = 3;
+const CYCLE_MS = 360; // 略大于 .pc transform transition(0.3s)
+const displayBoard = ref<UidPiece[]>(initialPiecesWithUid());
+const displayLastMove = ref<{ from: Sq; to: Sq } | null>(null);
+const anim = ref<BoardAnim | null>(null);
+let animSeq = 0;
+let animQueue: { A: UidPiece[]; B: UidPiece[]; from: Sq; to: Sq; seq: number; turn: Side }[] = [];
+let draining = false;
+let destroyed = false;
+
+const raf = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()));
+const sleepMs = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function enqueueMove(from: Sq, to: Sq, seq: number, turn: Side): void {
+  const A = displayBoard.value.slice();
+  const B = applyMoveToPieces(A.slice(), from, to, seq, turn);
+  animQueue.push({ A, B, from, to, seq, turn });
+  void drainQueue();
+}
+async function drainQueue(): Promise<void> {
+  if (draining || destroyed) return;
+  draining = true;
+  try {
+    while (animQueue.length > 0 && !destroyed) {
+      const item = animQueue.shift()!;
+      const s = speed.value;
+      // ① 待动子高亮闪烁(起点脉冲圈 + 目标格虚线)
+      anim.value = { phase: 'hover', from: item.from, to: item.to, id: ++animSeq };
+      await sleepMs(760 / s);
+      if (destroyed) return;
+      // ② 显示起点→终点带箭头路径并高亮(虚线流动)
+      anim.value = { phase: 'path', from: item.from, to: item.to, id: ++animSeq };
+      await sleepMs(800 / s);
+      if (destroyed) return;
+      // ③ 落子:回到未走状态 → 下一帧落下(补间 A→B),重复 REPEAT 次
+      anim.value = null;
+      for (let k = 0; k < REPEAT; k++) {
+        displayBoard.value = item.A;
+        await raf();
+        displayBoard.value = item.B;
+        await sleepMs(CYCLE_MS / s);
+      }
+      displayLastMove.value = { from: item.from, to: item.to };
+    }
+  } finally {
+    anim.value = null;
+    draining = false;
+  }
+}
+// 监听实时 move 流(断线补发亦重放),入慢放队列;棋盘展示 displayBoard,实时数据仍走 game.*
+let lastPlayedMoves = 0;
+watch(
+  () => game.moves.length,
+  (n) => {
+    while (lastPlayedMoves < n) {
+      const m = game.moves[lastPlayedMoves]!;
+      enqueueMove(m.from, m.to, m.seq, m.turn);
+      lastPlayedMoves += 1;
+    }
+  },
+  { immediate: true },
+);
+
+/* ---------- 顶部按钮浮层:对局履历 / 赛后复盘(不占用中间棋盘空间) ---------- */
+const showLog = ref(false);
+const showReview = ref(false);
+function toggleLog(): void {
+  showLog.value = !showLog.value;
+  if (showLog.value) showReview.value = false;
+}
+function toggleReview(): void {
+  showReview.value = !showReview.value;
+  if (showReview.value) showLog.value = false;
+}
 
 /* ---------- 派生 ---------- */
 
@@ -110,6 +213,18 @@ function onStep(): void {
 }
 function onSpeed(v: number): void {
   speed.value = v;
+}
+/* 重开确认:重开会结束当前对局并消耗费用,先确认再执行 */
+const confirmRestart = ref(false);
+function onRequestRestart(): void {
+  confirmRestart.value = true;
+}
+function doRestart(): void {
+  confirmRestart.value = false;
+  emit('restart');
+}
+function cancelRestart(): void {
+  confirmRestart.value = false;
 }
 function onToggleMute(): void {
   muted.value = !muted.value;
@@ -145,37 +260,26 @@ function moveLine(m: MoveRecord): string {
 
 <template>
   <div class="game-view">
-    <main class="stage">
-      <section class="board-frame">
-        <XQBoard :pieces="game.board" :last-move="game.lastMove" />
-        <span v-if="checkFlash && game.checkSide" :key="game.checkSeq" class="check-badge show">将!</span>
-        <div class="end-banner" :class="{ show: game.phase === 'finished' }">
-          <template v-if="game.result">
-            <div class="result" data-testid="result">{{ resultText }}</div>
-            <div class="reason">{{ fmtReason(game.result.reason) }}</div>
-            <div class="viol">
-              红方打回 {{ game.result.ruleViolations.red.total }} · 黑方打回 {{ game.result.ruleViolations.black.total }}
-            </div>
-            <div class="note">单局 · 未换色,胜负不作模型强弱结论</div>
-          </template>
-        </div>
-        <span class="board-corner">live</span>
-        <div v-if="game.error" class="err-banner" data-testid="game-error">
-          {{ game.error }}<button class="btn" @click="emit('exit')">返回新局</button>
-        </div>
-      </section>
+    <!-- 顶部公共 banner:控制条 + meta + 思考计时(不属于任何一方) -->
+    <header class="gv-banner">
+      <GameControls
+        :status="game.phase"
+        :speed="speed"
+        :muted="muted"
+        @toggle-play="onTogglePlay"
+        @step="onStep"
+        @restart="onRequestRestart"
+        @speed="onSpeed"
+        @toggle-mute="onToggleMute"
+      />
 
-      <aside class="side">
-        <GameControls
-          :status="game.phase"
-          :speed="speed"
-          :muted="muted"
-          @toggle-play="onTogglePlay"
-          @step="onStep"
-          @restart="emit('restart')"
-          @speed="onSpeed"
-          @toggle-mute="onToggleMute"
-        />
+      <div class="banner-right">
+        <button class="btn" :class="{ on: showLog }" data-testid="toggle-log" @click="toggleLog">
+          对局履历
+        </button>
+        <button class="btn" :class="{ on: showReview }" data-testid="toggle-review" @click="toggleReview">
+          复盘
+        </button>
 
         <div class="meta-bar">
           <span class="cell first">先手 <b data-testid="meta-first">{{ game.first === 'red' ? '红方' : '黑方' }}</b></span>
@@ -184,23 +288,19 @@ function moveLine(m: MoveRecord): string {
           <span class="divider"></span>
           <span class="cell">步数 <b :key="`h${game.moves.length}`" class="tick" data-testid="meta-half">{{ meta.halfMoves }}</b></span>
           <span class="divider"></span>
-          <span class="cell">用时 <b :key="`t${game.moves.length}`" class="tick">{{ meta.elapsed }}</b></span>
+          <span class="cell">总用时 <b>{{ meta.elapsed }}</b></span>
         </div>
 
-        <ThoughtPanel
-          side="red"
-          name="红方"
-          :model="game.models.red"
-          :entries="entries.red"
-          :live-text="game.liveThoughts.red"
-          :active="game.thinking.red"
-          :elapsed-ms="game.costSummary.red.elapsedMs"
-          :prompt-tokens="game.costSummary.red.promptTokens"
-          :completion-tokens="game.costSummary.red.completionTokens"
-          :rejections="game.rejectCount.red"
-          :violations="game.result?.ruleViolations.red"
-          :finished="game.phase === 'finished'"
-        />
+        <div v-if="thinkSide" class="think-timer" :class="thinkSide" data-testid="think-timer">
+          <span class="beam"></span>
+          {{ thinkSide === 'red' ? '红方' : '黑方' }}思考中 · 已思考 <b data-testid="think-elapsed">{{ fmtMs(thinkElapsed) }}</b>
+        </div>
+      </div>
+    </header>
+
+    <main class="stage">
+      <!-- 左栏:黑方(棋盘上方一方) -->
+      <aside class="side-pane left" data-pane="black">
         <ThoughtPanel
           side="black"
           name="黑方"
@@ -215,30 +315,91 @@ function moveLine(m: MoveRecord): string {
           :violations="game.result?.ruleViolations.black"
           :finished="game.phase === 'finished'"
         />
+      </aside>
 
-        <div class="log-wrap">
-          <div class="log-title">对局履历 <span class="n">{{ game.moves.length }} 步</span></div>
-          <TransitionGroup tag="ul" name="log" class="log-list" data-testid="move-log">
-            <li
-              v-for="(m, i) in game.moves"
-              :key="`${m.seq}:${i}`"
-              class="log-item"
-              :class="m.turn"
-            >
-              <span class="log-seq">{{ i + 1 }}</span>
-              <span class="log-move">{{ moveLine(m) }}</span>
-              <span class="log-t">{{ m.elapsedMs != null ? fmtMs(m.elapsedMs) : '—' }}</span>
-              <span v-if="m.analysis" class="log-a">{{ m.analysis }}</span>
-            </li>
-            <li v-if="game.moves.length === 0" key="empty" class="log-empty" data-testid="log-empty">
-              {{ game.phase === 'connecting' ? '连接中…' : '尚无着法' }}
-            </li>
-          </TransitionGroup>
+      <!-- 中栏:棋盘(履历/复盘收纳到顶部按钮浮层,不挤占棋盘空间) -->
+      <section class="board-col">
+        <div class="board-frame">
+          <XQBoard :pieces="displayBoard" :last-move="displayLastMove" :anim="anim" />
+          <span v-if="checkFlash && game.checkSide" :key="game.checkSeq" class="check-badge show">将!</span>
+          <div class="end-banner" :class="{ show: game.phase === 'finished' }">
+            <template v-if="game.result">
+              <div class="result" data-testid="result">{{ resultText }}</div>
+              <div class="reason">{{ fmtReason(game.result.reason) }}</div>
+              <div class="viol">
+                红方打回 {{ game.result.ruleViolations.red.total }} · 黑方打回 {{ game.result.ruleViolations.black.total }}
+              </div>
+              <div class="note">单局 · 未换色,胜负不作模型强弱结论</div>
+            </template>
+          </div>
+          <span class="board-corner">live</span>
+          <div v-if="game.error" class="err-banner" data-testid="game-error">
+            {{ game.error }}<button class="btn" @click="emit('exit')">返回新局</button>
+          </div>
         </div>
+      </section>
 
-        <ReviewPanel :review="game.review" :game-over="game.phase === 'finished'" />
+      <!-- 右栏:红方(棋盘下方一方) -->
+      <aside class="side-pane right" data-pane="red">
+        <ThoughtPanel
+          side="red"
+          name="红方"
+          :model="game.models.red"
+          :entries="entries.red"
+          :live-text="game.liveThoughts.red"
+          :active="game.thinking.red"
+          :elapsed-ms="game.costSummary.red.elapsedMs"
+          :prompt-tokens="game.costSummary.red.promptTokens"
+          :completion-tokens="game.costSummary.red.completionTokens"
+          :rejections="game.rejectCount.red"
+          :violations="game.result?.ruleViolations.red"
+          :finished="game.phase === 'finished'"
+        />
       </aside>
     </main>
+
+    <!-- 浮层:对局履历 / 复盘(顶部按钮唤出,不占棋盘空间) -->
+    <Transition name="panel">
+      <div v-if="showLog" class="float-panel" data-testid="log-panel">
+        <div class="fp-head">对局履历 <span class="n">{{ game.moves.length }} 步</span></div>
+        <TransitionGroup tag="ul" name="log" class="log-list" data-testid="move-log">
+          <li
+            v-for="(m, i) in game.moves"
+            :key="`${m.seq}:${i}`"
+            class="log-item"
+            :class="m.turn"
+          >
+            <span class="log-seq">{{ i + 1 }}</span>
+            <span class="log-move">{{ moveLine(m) }}</span>
+            <span class="log-t">{{ m.elapsedMs != null ? fmtMs(m.elapsedMs) : '—' }}</span>
+            <span v-if="m.analysis" class="log-a">{{ m.analysis }}</span>
+          </li>
+          <li v-if="game.moves.length === 0" key="empty" class="log-empty" data-testid="log-empty">
+            {{ game.phase === 'connecting' ? '连接中…' : '尚无着法' }}
+          </li>
+        </TransitionGroup>
+      </div>
+    </Transition>
+    <Transition name="panel">
+      <div v-if="showReview" class="float-panel" data-testid="review-panel">
+        <div class="fp-head">赛后复盘</div>
+        <ReviewPanel :review="game.review" :game-over="game.phase === 'finished'" />
+      </div>
+    </Transition>
+
+    <!-- 重开确认:防止误触结束当前对局 -->
+    <Transition name="fade">
+      <div v-if="confirmRestart" class="confirm-mask" data-testid="confirm-mask" @click.self="cancelRestart">
+        <div class="confirm-card">
+          <div class="confirm-title">重新开一局?</div>
+          <div class="confirm-sub">当前对局将立即结束(日志仍可回放);新建对局会重新消耗模型费用。</div>
+          <div class="confirm-actions">
+            <button class="btn" @click="cancelRestart">取消</button>
+            <button class="btn danger" data-testid="confirm-restart" @click="doRestart">确认重开</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -248,23 +409,86 @@ function moveLine(m: MoveRecord): string {
   flex-direction: column;
   height: 100vh;
 }
-.stage {
+/* 顶部公共工具条:与 App 品牌栏合成视觉上一块(去独立边框/背景),控制 + meta + 思考计时 */
+.gv-banner {
   display: flex;
-  gap: 18px;
-  padding: 18px 24px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 6px 20px;
+  border: none;
+  background: transparent;
+}
+.banner-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+/* 三栏:左(黑,棋盘上方一方)/ 中(棋盘)/ 右(红,棋盘下方一方) */
+.stage {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 340px) minmax(0, 1fr) minmax(0, 340px);
+  gap: 16px;
+  padding: 14px 20px;
 }
 @media (max-width: 980px) {
   .stage {
-    flex-direction: column;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto 1fr;
     overflow: visible;
+  }
+}
+/* 思考计时徽章(当前思考方实时秒表) */
+.think-timer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 5px 12px;
+  background: var(--panel-2);
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.think-timer b {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  display: inline-block;
+  animation: tickPop 0.3s ease-out;
+}
+.think-timer.red b {
+  color: var(--red);
+}
+.think-timer.black b {
+  color: #d8cbb2;
+}
+.think-timer .beam {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 10px var(--amber);
+  animation: beamPulse 1s ease-in-out infinite;
+}
+@keyframes beamPulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
   }
 }
 .board-frame {
   flex: 1;
   min-width: 0;
+  min-height: 360px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -378,43 +602,46 @@ function moveLine(m: MoveRecord): string {
 .err-banner .btn {
   margin-left: auto;
 }
-.side {
+.side-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  width: 392px;
-  flex: none;
-  min-height: 0;
-  overflow-y: auto;
   padding-right: 2px;
 }
-@media (max-width: 980px) {
-  .side {
-    width: auto;
-  }
-}
-.side::-webkit-scrollbar {
+.side-pane::-webkit-scrollbar {
   width: 6px;
 }
-.side::-webkit-scrollbar-thumb {
+.side-pane::-webkit-scrollbar-thumb {
   background: var(--line);
   border-radius: 3px;
+}
+/* 中栏:棋盘 + 公共履历/复盘 */
+.board-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 .meta-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: 6px;
+  font-size: 11px;
   color: var(--ink-dim);
   flex-wrap: wrap;
 }
 .meta-bar .cell {
   border: 1px solid var(--line);
-  background: var(--panel);
-  padding: 7px 12px;
+  background: var(--panel-2);
+  padding: 4px 10px;
   border-radius: 8px;
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
 }
 .meta-bar .cell b {
@@ -561,5 +788,96 @@ function moveLine(m: MoveRecord): string {
 }
 .btn:hover {
   border-color: var(--ink-soft);
+}
+.btn.on {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+/* 浮层(对局履历 / 复盘):从右侧滑入,不挤占棋盘 */
+.float-panel {
+  position: fixed;
+  right: 18px;
+  top: 84px;
+  width: 380px;
+  max-width: calc(100vw - 36px);
+  max-height: min(60vh, calc(100vh - 120px));
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  padding: 12px 14px;
+  z-index: 40;
+}
+.fp-head {
+  font-size: 12px;
+  color: var(--ink-dim);
+  letter-spacing: 0.2em;
+  margin: 0 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fp-head .n {
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+}
+.panel-enter-active,
+.panel-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.panel-enter-from,
+.panel-leave-to {
+  opacity: 0;
+  transform: translateX(16px);
+}
+/* 重开确认对话框 */
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 7, 4, 0.55);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+.confirm-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px 24px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  width: min(360px, 90vw);
+}
+.confirm-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  letter-spacing: 0.1em;
+}
+.confirm-sub {
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin: 8px 0 16px;
+  line-height: 1.7;
+}
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.confirm-actions .btn.danger {
+  background: var(--red);
+  border-color: var(--red);
+  color: #f6ead6;
+  font-weight: 600;
+}
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.18s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 </style>

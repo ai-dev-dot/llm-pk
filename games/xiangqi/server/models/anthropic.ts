@@ -17,7 +17,7 @@
 //
 
 import type { MoveChoice, MoveContext, Player } from '../arena';
-import { NetworkError } from '../arena';
+import { NetworkError, PlayerCancelled } from '../arena';
 import type { Usage } from '../game-log';
 import type { Side } from '../../engine/types';
 import { buildSystemPrompt } from '../../scripts/spike-prompt';
@@ -169,6 +169,10 @@ export class AnthropicPlayer implements Player {
   private readonly stream: boolean;
   /** 构造契约占位(透传 arena),player 层不自行重试。 */
   public readonly networkRetryBaseDelayMs?: number;
+  /** 当前飞行请求的 AbortController(pause abort 用);无飞行请求时 null。 */
+  private ctl: AbortController | null = null;
+  /** 被外部 cancelPending 中止(pause)的标志 → 抛 PlayerCancelled,而非超时。 */
+  private cancelled = false;
 
   constructor(cfg: AnthropicPlayerConfig) {
     this.side = cfg.side;
@@ -184,7 +188,14 @@ export class AnthropicPlayer implements Player {
     this.stream = cfg.stream ?? true;
   }
 
+  /** 外部中止当前飞行请求(arena.pause 冻结回合用):置取消标志并 abort → 后续 AbortError 识别为暂停中止。 */
+  cancelPending(): void {
+    this.cancelled = true;
+    this.ctl?.abort();
+  }
+
   async pickMove(ctx: MoveContext): Promise<MoveChoice> {
+    this.cancelled = false; // 新请求重置暂停标志
     const started = Date.now();
     // 自定义 systemPrompt 优先(arena config 传入可令其生效),缺省回落同一模板。
     const system = this.systemPrompt ?? buildSystemPrompt(this.side);
@@ -201,6 +212,7 @@ export class AnthropicPlayer implements Player {
     };
 
     const controller = new AbortController();
+    this.ctl = controller;
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let res: Response;
     try {
@@ -217,12 +229,17 @@ export class AnthropicPlayer implements Player {
     } catch (err) {
       if (err instanceof NetworkError) throw err; // httpError 已抛的保留原语义
       if (err instanceof Error && err.name === 'AbortError') {
+        // 被外部 pause 中止(cancelPending)→ 暂停信号,不算超时、不算失败
+        if (this.cancelled) throw new PlayerCancelled('回合被暂停中止');
         throw new NetworkError(`api timeout(>${this.timeoutMs}ms)`, true);
       }
       throw new NetworkError(`network error: ${err instanceof Error ? err.message : String(err)}`, true);
     } finally {
       // 注意:流式读取期间超时定时器仍需工作,故不能在这里 clear —— 移到读取完成后的收尾。
-      if (!this.stream) clearTimeout(timer);
+      if (!this.stream) {
+        clearTimeout(timer);
+        this.ctl = null;
+      }
     }
 
     if (res.status < 200 || res.status >= 300) {
@@ -246,11 +263,13 @@ export class AnthropicPlayer implements Player {
     } catch (err) {
       if (err instanceof NetworkError) throw err;
       if (err instanceof Error && err.name === 'AbortError') {
+        if (this.cancelled) throw new PlayerCancelled('回合被暂停中止');
         throw new NetworkError(`api timeout(>${this.timeoutMs}ms)`, true);
       }
       throw new NetworkError(`读响应体失败: ${err instanceof Error ? err.message : String(err)}`, true);
     } finally {
       clearTimeout(timer);
+      this.ctl = null;
     }
   }
 

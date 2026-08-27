@@ -10,13 +10,28 @@ import { computed, ref, shallowRef, watch } from 'vue';
 import type { Sq } from '../../../engine/types';
 import { normalizePieces, sqIdx, type PieceRec, type PiecesInput } from '../lib/board';
 
+/** 走子前导动画(由宿主慢放队列驱动):hover=待动棋子高亮;path=起点→终点带箭头路径。 */
+export interface BoardAnim {
+  phase: 'hover' | 'path';
+  from: Sq;
+  to: Sq;
+  /** 递增 id:每次阶段变化让元素重挂以重触发 CSS 动画。 */
+  id: number;
+}
+
 const props = withDefaults(
   defineProps<{
     pieces: PiecesInput;
     lastMove?: { from: Sq; to: Sq } | null;
+    /** 走子前导动画(hover 高亮 / path 路径)。null = 无。 */
+    anim?: BoardAnim | null;
   }>(),
-  { lastMove: null },
+  { lastMove: null, anim: null },
 );
+
+const animCtx = computed(() => props.anim);
+// anim 关键 id:随阶段变化,配合 :key 重挂动画元素
+const animKey = computed(() => (props.anim ? `a${props.anim.id}` : null));
 
 /* ---------- 布局常量(迁自 demo.html) ---------- */
 const CELL = 48;
@@ -149,6 +164,29 @@ function isLastMoveSq(p: PieceRec): boolean {
 function landKey(p: PieceRec): string {
   return isLastMoveSq(p) ? `land:${stampKey.value ?? 'x'}` : 'static';
 }
+
+/** 移动路径箭头:从 from 指向 to 的三角形 path(尖端收在终点棋子半径外)。 */
+function arrowD(a: { from: Sq; to: Sq }): string {
+  const x1 = posX(a.from.file);
+  const y1 = posY(a.from.rank);
+  const x2 = posX(a.to.file);
+  const y2 = posY(a.to.rank);
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+  const tip = R + 8; // 箭头尖端距目标棋子中心(让开我现在)
+  const base = tip + 10;
+  const sx = x2 - ux * tip;
+  const sy = y2 - uy * tip;
+  const bx = x2 - ux * base;
+  const by = y2 - uy * base;
+  const px = -uy;
+  const py = ux;
+  const hw = 6.5;
+  return `M ${x2} ${y2} L ${sx + px * hw} ${sy + py * hw} L ${bx} ${by} L ${sx - px * hw} ${sy - py * hw} Z`;
+}
 </script>
 
 <template>
@@ -203,11 +241,28 @@ function landKey(p: PieceRec): string {
     <circle v-if="toSq && stampKey" :key="stampKey" class="stamp anim" :cx="posX(toSq.file)" :cy="posY(toSq.rank)" :r="R + 3" fill="none" stroke="rgba(176,58,38,.85)" stroke-width="2.2" />
     <circle v-if="toSq && stampKey" :key="`${stampKey}-inner`" class="stamp anim2" :cx="posX(toSq.file)" :cy="posY(toSq.rank)" :r="R - 6" fill="none" stroke="rgba(255,213,122,.9)" stroke-width="1.6" />
 
-    <!-- 棋子(TransitionGroup:被吃子 leave 淡出;走子同 uid 复用 <g>,transform 补间) -->
-    <TransitionGroup tag="g" name="pc" class="pc-layer">
+    <!-- 走子前导动画(hover 高亮待动子 / path 显示起点→终点带箭头路径);:key 随阶段切换重挂 -->
+    <g v-if="animCtx && animKey" :key="animKey" class="anim-lead" :data-anim="animCtx.phase">
+      <template v-if="animCtx.phase === 'hover'">
+        <circle :cx="posX(animCtx.from.file)" :cy="posY(animCtx.from.rank)" :r="R + 6" fill="none" stroke="#ffd57a" stroke-width="3" class="hover-glint" />
+        <circle :cx="posX(animCtx.to.file)" :cy="posY(animCtx.to.rank)" :r="R - 3" fill="none" stroke="#ffd57a" stroke-width="1.6" stroke-dasharray="4 3" class="hover-dst" />
+      </template>
+      <template v-else-if="animCtx.phase === 'path'">
+        <line
+          :x1="posX(animCtx.from.file)"
+          :y1="posY(animCtx.from.rank)"
+          :x2="posX(animCtx.to.file)"
+          :y2="posY(animCtx.to.rank)"
+          class="path-line"
+        />
+        <path :d="arrowD(animCtx)" class="path-arrow" />
+        <circle :cx="posX(animCtx.from.file)" :cy="posY(animCtx.from.rank)" :r="R + 6" fill="none" stroke="#ffd57a" stroke-width="2.4" class="hover-glint" />
+      </template>
+    </g>
+
+    <!-- 棋子(普通 g 列表:走子同 uid 复用 <g>,transform 补间;不使用 TransitionGroup——SVG 下 FLIP 位置计算会把补间起点算成 (0,0)) -->
+    <g v-for="p in flatPieces" class="pc-group" :key="p.uid">
       <g
-        v-for="p in flatPieces"
-        :key="p.uid"
         :class="['pc', p.side, { 'last-move': isLastMoveSq(p) }]"
         :data-side="p.side"
         :data-type="p.type"
@@ -223,7 +278,7 @@ function landKey(p: PieceRec): string {
           </text>
         </g>
       </g>
-    </TransitionGroup>
+    </g>
   </svg>
 </template>
 
@@ -232,15 +287,9 @@ function landKey(p: PieceRec): string {
   display: block;
 }
 
-/* 走子补间(迁自 demo 的 .pc transition);被吃子 leave 淡出 */
+/* 走子补间(迁自 demo 的 .pc transition);被吃子直接移除,落点 stamp 双环 + 吃子音替代「淡出」 */
 .pc {
-  transition: transform 0.3s cubic-bezier(0.3, 0.7, 0.3, 1), opacity 0.22s ease-in;
-}
-.pc-leave-active {
-  transition: opacity 0.22s ease-in;
-}
-.pc-leave-to {
-  opacity: 0;
+  transition: transform 0.3s cubic-bezier(0.3, 0.7, 0.3, 1);
 }
 
 .pc.last-move circle:first-child {
@@ -351,16 +400,71 @@ function landKey(p: PieceRec): string {
   }
 }
 
+/* 走子前导动画:待动子闪烁高亮、目标格虚线呼吸 */
+.anim-lead {
+  pointer-events: none;
+}
+.hover-glint {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: hoverBlink 0.3s ease-in-out 3;
+}
+@keyframes hoverBlink {
+  0%,
+  100% {
+    opacity: 0.15;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+.hover-dst {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dstBreathe 0.6s ease-in-out infinite;
+}
+@keyframes dstBreathe {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* 路径:亮线 + 箭头,虚线流动 */
+.path-line {
+  stroke: #ffd57a;
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-dasharray: 7 5;
+  filter: drop-shadow(0 0 3px rgba(255, 213, 122, 0.9));
+  animation: pathFlow 0.5s linear infinite;
+}
+@keyframes pathFlow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+.path-arrow {
+  fill: #ffd57a;
+  filter: drop-shadow(0 0 3px rgba(255, 213, 122, 0.9));
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .pc,
-  .pc-leave-active {
+  .pc {
     transition: none;
   }
   .pc-inner.land,
   .stamp.anim,
   .stamp.anim2,
   .from-dot,
-  .last-dot {
+  .last-dot,
+  .hover-glint,
+  .hover-dst,
+  .path-line {
     animation: none;
   }
 }
