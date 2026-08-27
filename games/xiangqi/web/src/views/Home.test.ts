@@ -87,7 +87,7 @@ describe('Home 列表渲染', () => {
 });
 
 describe('Home 导航行为', () => {
-  it('「开始对局」POST 空配置 → toGame 新 id', async () => {
+  it('「开始对局」POST 空配置(带思考模式)→ toGame 新 id;切换 max 后再次开局', async () => {
     const seen: string[] = [];
     vi.stubGlobal(
       'fetch',
@@ -96,7 +96,7 @@ describe('Home 导航行为', () => {
         if (u === '/api/logs') return new Response(JSON.stringify({ games: [] }), { status: 200 });
         if (u === '/api/games') {
           const body = JSON.parse(String(init?.body));
-          seen.push(`${body.red.model}|${body.black.model}`);
+          seen.push(`${body.red.model}|${body.black.model}|${body.config?.thinkingMode}`);
           return new Response(JSON.stringify({ id: 'g-new' }), { status: 201 });
         }
         throw new Error('unexpected: ' + u);
@@ -105,10 +105,20 @@ describe('Home 导航行为', () => {
     const w = mount(Home);
     await flushPromises();
 
+    // 思考模式选择器默认关闭(x);红/黑均留空 → 服务端回落 config.json
+    expect(w.get('[data-testid="mode-off"]').classes()).toContain('on');
     await w.get('[data-testid="start-game"]').trigger('click');
     await flushPromises();
     expect(w.emitted('toGame')?.[0]).toEqual(['g-new']);
-    expect(seen).toEqual(['|']); // 红/黑均留空 → 服务端回落 config.json
+    expect(seen).toEqual(['||off']);
+
+    // 切到 max 再开一局 → 请求体带 config.thinkingMode=max(原则 E 二选一)
+    await w.get('[data-testid="mode-max"]').trigger('click');
+    expect(w.get('[data-testid="mode-max"]').classes()).toContain('on');
+    expect(w.get('[data-testid="mode-off"]').classes()).not.toContain('on');
+    await w.get('[data-testid="start-game"]').trigger('click');
+    await flushPromises();
+    expect(seen).toEqual(['||off', '||max']);
     w.unmount();
   });
 

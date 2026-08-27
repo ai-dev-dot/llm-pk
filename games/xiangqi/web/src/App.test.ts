@@ -56,8 +56,10 @@ describe('App 全流程冒烟', () => {
         const method = init?.method ?? 'GET';
         if (u === '/api/logs') return new Response(JSON.stringify({ games: [] }), { status: 200 });
         if (u === '/api/games' && method === 'POST') {
-          // 断言请求体为空配置(红/黑不落屏,服务端回落 config.json)
-          expect(JSON.parse(String(init?.body)).red.model).toBe('');
+          // 断言请求体为空配置 + 思考模式(红/黑不落屏,服务端回落 config.json)
+          const posted = JSON.parse(String(init?.body));
+          expect(posted.red.model).toBe('');
+          expect(posted.config?.thinkingMode).toBe('off'); // 重开默认关闭思考
           return new Response(JSON.stringify({ id: 'g-smoke' }), { status: 201 });
         }
         if (u.endsWith('/replay')) return new Response(JSON.stringify({ id: 'g-smoke', events: [] }), { status: 200 });

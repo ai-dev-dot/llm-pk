@@ -95,7 +95,13 @@ export interface SideConfig {
 export interface NewGameConfig {
   red: SideConfig;
   black: SideConfig;
-  config?: { illegalAttemptsLimit?: number; maxTotalMoves?: number; maxCostPerGame?: number };
+  config?: {
+    illegalAttemptsLimit?: number;
+    maxTotalMoves?: number;
+    maxCostPerGame?: number;
+    /** 本局思考模式(原则 E):'off' 关闭思考 | 'max' 启用 max 思考(二选一,无第三选项)。 */
+    thinkingMode?: 'off' | 'max';
+  };
 }
 
 /* ---------- WS 抽象(测试可注入 fake) ---------- */
@@ -188,6 +194,7 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     thinking: { red: false, black: false } as Record<Side, boolean>,
     models: { red: undefined as string | undefined, black: undefined as string | undefined },
     first: 'red' as Side, // 先手方(取自 begin.first;旧日志缺省红先)
+    thinkingMode: 'off' as 'off' | 'max' | undefined, // 本局思考模式(begin.rules.thinkingMode;历史缺省 off)
     checkSeq: 0,
     checkSide: null as Side | null,
     result: null as ResultInfo | null,
@@ -230,6 +237,7 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
       case 'begin': {
         state.phase = 'running';
         state.first = e.first ?? 'red';
+        state.thinkingMode = e.rules?.thinkingMode ?? 'off';
         state.models.red = e.red?.model;
         state.models.black = e.black?.model;
         refreshThinking();
@@ -428,6 +436,7 @@ export interface UseGameState {
   thinking: Record<Side, boolean>;
   models: { red: string | undefined; black: string | undefined };
   first: Side;
+  thinkingMode: 'off' | 'max' | undefined;
   checkSeq: number;
   checkSide: Side | null;
   result: ResultInfo | null;

@@ -284,6 +284,8 @@ function moveLine(m: MoveRecord): string {
         <div class="meta-bar">
           <span class="cell first">先手 <b data-testid="meta-first">{{ game.first === 'red' ? '红方' : '黑方' }}</b></span>
           <span class="divider"></span>
+          <span class="cell">思考 <b data-testid="meta-thinking">{{ game.thinkingMode === 'max' ? 'max' : 'off' }}</b></span>
+          <span class="divider"></span>
           <span class="cell">回合 <b :key="`r${game.moves.length}`" class="tick" data-testid="meta-round">{{ meta.round }}</b></span>
           <span class="divider"></span>
           <span class="cell">步数 <b :key="`h${game.moves.length}`" class="tick" data-testid="meta-half">{{ meta.halfMoves }}</b></span>

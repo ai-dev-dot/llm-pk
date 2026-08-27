@@ -27,10 +27,13 @@ const emit = defineEmits<{
   (e: 'toReplay', id: string): void;
 }>();
 
-const EMPTY_CONFIG: NewGameConfig = {
-  red: { baseUrl: '', apiKey: '', model: '' },
-  black: { baseUrl: '', apiKey: '', model: '' },
-};
+// 思考模式(原则 E):每场 PK 必须二选一 —— 关闭思考 或 max 思考。
+// 参考建议:flash 级模型选「关闭」;各厂主力旗舰选「max」。
+const thinkingMode = ref<'off' | 'max'>('off');
+const modeChoices = [
+  { value: 'off', title: '关闭思考', desc: 'flash 级模型建议' },
+  { value: 'max', title: '启用 max 思考', desc: '各厂主力旗舰建议' },
+] as const;
 
 const games = ref<GameListItem[]>([]);
 const error = ref<string | null>(null);
@@ -63,8 +66,14 @@ async function start(): Promise<void> {
   if (creating.value) return;
   creating.value = true;
   error.value = null;
+  const cfg: NewGameConfig = {
+    red: { baseUrl: '', apiKey: '', model: '' },
+    black: { baseUrl: '', apiKey: '', model: '' },
+    // 原则 E:本局思考模式随开局请求下发双方(same boundary)。
+    config: { thinkingMode: thinkingMode.value },
+  };
   try {
-    const { id } = await createGame(EMPTY_CONFIG);
+    const { id } = await createGame(cfg);
     emit('toGame', id);
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
@@ -103,6 +112,26 @@ onBeforeUnmount(() => {
         </p>
       </div>
     </section>
+
+    <fieldset class="mode-picker" data-testid="thinking-mode">
+      <legend class="mode-label">思考模式</legend>
+      <button
+        v-for="c in modeChoices"
+        :key="c.value"
+        type="button"
+        class="mode-opt"
+        :class="{ on: thinkingMode === c.value }"
+        :data-testid="`mode-${c.value}`"
+        @click="thinkingMode = c.value"
+      >
+        <span class="mode-dot"></span>
+        <span class="mode-txt">
+          <b>{{ c.title }}</b>
+          <i>{{ c.desc }}</i>
+        </span>
+      </button>
+      <span class="mode-hint">每局必须二选一;选择结果以同一边界同时下发双方。</span>
+    </fieldset>
 
     <div class="toolbar">
       <button class="btn pri" :disabled="creating" data-testid="start-game" @click="start">
@@ -219,6 +248,72 @@ onBeforeUnmount(() => {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--amber);
+}
+.mode-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.mode-label {
+  font-size: 12px;
+  color: var(--ink-soft);
+  letter-spacing: 0.08em;
+  padding-right: 6px;
+}
+.mode-opt {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink-soft);
+  border-radius: 9px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.mode-opt .mode-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--ink-dim);
+}
+.mode-opt .mode-txt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.3;
+}
+.mode-opt .mode-txt b {
+  font-size: 13px;
+  color: var(--ink);
+  font-weight: 600;
+}
+.mode-opt .mode-txt i {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--ink-dim);
+}
+.mode-opt.on {
+  border-color: var(--amber);
+  background: rgba(219, 155, 59, 0.12);
+}
+.mode-opt.on .mode-dot {
+  background: var(--amber);
+  border-color: var(--amber);
+  box-shadow: 0 0 6px var(--amber);
+}
+.mode-opt.on .mode-txt b {
+  color: var(--amber);
+}
+.mode-hint {
+  font-size: 11px;
+  color: var(--ink-dim);
 }
 .toolbar {
   display: flex;
