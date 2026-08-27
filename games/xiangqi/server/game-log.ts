@@ -44,7 +44,7 @@ export interface GameRulesSnapshot {
   carrySelfAnalysisN: number;
   contextBudgetTokens: number;
   /** 本局思考模式(原则 E):'off'(关闭思考)|'max'(启用 max 思考);双方以同一设定下发;历史日志缺省视为 off。 */
-  thinkingMode?: 'off' | 'max';
+  thinkingMode?: 'off' | 'high' | 'max';
 }
 
 export interface BeginEvent extends BaseEvent {

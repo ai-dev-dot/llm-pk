@@ -99,8 +99,8 @@ export interface NewGameConfig {
     illegalAttemptsLimit?: number;
     maxTotalMoves?: number;
     maxCostPerGame?: number;
-    /** 本局思考模式(原则 E):'off' 关闭思考 | 'max' 启用 max 思考(二选一,无第三选项)。 */
-    thinkingMode?: 'off' | 'max';
+    /** 本局思考模式(原则 E):'off' 关闭思考 | 'high' 适中思考 | 'max' 最大思考(三选一)。 */
+    thinkingMode?: 'off' | 'high' | 'max';
   };
 }
 
@@ -194,7 +194,7 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     thinking: { red: false, black: false } as Record<Side, boolean>,
     models: { red: undefined as string | undefined, black: undefined as string | undefined },
     first: 'red' as Side, // 先手方(取自 begin.first;旧日志缺省红先)
-    thinkingMode: 'off' as 'off' | 'max' | undefined, // 本局思考模式(begin.rules.thinkingMode;历史缺省 off)
+    thinkingMode: 'off' as 'off' | 'high' | 'max' | undefined, // 本局思考模式(begin.rules.thinkingMode;历史缺省 off)
     checkSeq: 0,
     checkSide: null as Side | null,
     result: null as ResultInfo | null,
@@ -436,7 +436,7 @@ export interface UseGameState {
   thinking: Record<Side, boolean>;
   models: { red: string | undefined; black: string | undefined };
   first: Side;
-  thinkingMode: 'off' | 'max' | undefined;
+  thinkingMode: 'off' | 'high' | 'max' | undefined;
   checkSeq: number;
   checkSide: Side | null;
   result: ResultInfo | null;

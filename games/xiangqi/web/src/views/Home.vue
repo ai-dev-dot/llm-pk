@@ -27,11 +27,12 @@ const emit = defineEmits<{
   (e: 'toReplay', id: string): void;
 }>();
 
-// 思考模式(原则 E):每场 PK 必须二选一 —— 关闭思考 或 max 思考。
-// 参考建议:flash 级模型选「关闭」;各厂主力旗舰选「max」。
-const thinkingMode = ref<'off' | 'max'>('off');
+// 思考模式(原则 E):每场 PK 必须三选一 —— 关闭思考 / high 思考 / max 思考。
+// 参考建议:flash 级模型选「关闭」;想验证思考但嫌 max 太慢的选「high」;各厂主力旗舰选「max」。
+const thinkingMode = ref<'off' | 'high' | 'max'>('off');
 const modeChoices = [
   { value: 'off', title: '关闭思考', desc: 'flash 级模型建议' },
+  { value: 'high', title: '启用 high 思考', desc: '适中深度 · 比 max 快' },
   { value: 'max', title: '启用 max 思考', desc: '各厂主力旗舰建议' },
 ] as const;
 
@@ -130,7 +131,7 @@ onBeforeUnmount(() => {
           <i>{{ c.desc }}</i>
         </span>
       </button>
-      <span class="mode-hint">每局必须二选一;选择结果以同一边界同时下发双方。</span>
+      <span class="mode-hint">每局必须三选一;选择结果以同一边界同时下发双方。</span>
     </fieldset>
 
     <div class="toolbar">

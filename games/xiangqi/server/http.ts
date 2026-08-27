@@ -45,7 +45,7 @@ export interface ResolvedSide {
   /** 命名用 label:优先 profile 名(`use` 引用),回落模型名(T19 归档友好 id)。 */
   label: string;
   /** 本局思考模式(原则 E):请求 config.thinkingMode 解析(rules)后随 player 构造下发,双方同额。 */
-  thinkingMode?: 'off' | 'max';
+  thinkingMode?: 'off' | 'high' | 'max';
   systemPrompt?: string;
   maxTokens?: number;
   timeoutMs?: number;
@@ -536,10 +536,10 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
       if (v !== undefined) out[k] = v;
     }
     if (out.maxTotalMoves === undefined && d.steps !== undefined) out.maxTotalMoves = d.steps;
-    // 原则 E:思考模式枚举归一(非 off/max → 缺省,arena 回落 off 并落盘)。
+    // 原则 E:思考模式枚举归一(非 off/high/max → 缺省,arena 回落 off 并落盘)。
     if (out.thinkingMode === undefined) {
       const raw = cfgBody.thinkingMode ?? defRules.thinkingMode;
-      out.thinkingMode = raw === 'max' ? 'max' : raw === 'off' ? 'off' : undefined;
+      out.thinkingMode = raw === 'max' ? 'max' : raw === 'high' ? 'high' : raw === 'off' ? 'off' : undefined;
     }
     return out;
   }

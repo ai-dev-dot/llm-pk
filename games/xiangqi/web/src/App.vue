@@ -47,7 +47,7 @@ if (typeof window !== 'undefined') {
 const EMPTY_CONFIG: NewGameConfig = {
   red: { baseUrl: '', apiKey: '', model: '' },
   black: { baseUrl: '', apiKey: '', model: '' },
-  config: { thinkingMode: 'off' }, // 观战页「重开」默认关闭思考;需 max 请回首页再选
+  config: { thinkingMode: 'off' }, // 观战页「重开」默认关闭思考;需 high/max 请回首页再选
 };
 const creating = ref(false);
 async function createAndGo(order: 'new' | 'restart'): Promise<void> {

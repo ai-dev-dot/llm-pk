@@ -63,16 +63,20 @@ export interface AnthropicPlayerConfig {
   maxTokens?: number;
   /**
    * 思考模式(原则 E):'off' 显式传 `thinking:{type:'disabled'}`(防端点默认开启思考的后门);
+   * 'high' 传 `thinking:{type:'enabled',budget_tokens:HIGH_THINKING_BUDGET_TOKENS}`(适中预算,比 max 快);
    * 'max' 传 `thinking:{type:'enabled',budget_tokens:MAX_THINKING_BUDGET_TOKENS}`(全局同额,保证公平)。
    * 缺省 'off'。本设定始终显式下发,绝不依赖端点缺省。
    */
-  thinkingMode?: 'off' | 'max';
+  thinkingMode?: 'off' | 'high' | 'max';
   /** 每百万 token 单价(USD),默认 `DEFAULT_TOKENS_PER_M`。 */
   tokensPerM?: TokensPerM;
 }
 
 /** max 思考模式的全局 budget_tokens 常量(原则 E:双方同一额度,保证公平)。 */
 export const MAX_THINKING_BUDGET_TOKENS = 32_000;
+
+/** high 思考模式(适中档)的全局 budget_tokens 常量(原则 E:同额公平;比 max 快的折中档)。 */
+export const HIGH_THINKING_BUDGET_TOKENS = 8_000;
 
 /** 强制工具输出 `{ analysis, move }`。 */
 const MOVE_TOOL_NAME = 'pick_move';
@@ -175,7 +179,7 @@ export class AnthropicPlayer implements Player {
   private readonly maxTokens?: number;
   private readonly tokensPerM: TokensPerM;
   private readonly systemPrompt?: string;
-  private readonly thinkingMode: 'off' | 'max';
+  private readonly thinkingMode: 'off' | 'high' | 'max';
   private readonly stream: boolean;
   /** 构造契约占位(透传 arena),player 层不自行重试。 */
   public readonly networkRetryBaseDelayMs?: number;
@@ -212,11 +216,13 @@ export class AnthropicPlayer implements Player {
     const system = this.systemPrompt ?? buildSystemPrompt(this.side);
     const user = buildUserPrompt(ctx);
     // 思考模式(原则 E):显式下发,绝不依赖端点缺省——off 也传 disabled,防默认开启后门。
-    // max 用全局同额 budget_tokens,保证双方考察边界完全一致。
+    // high/max 用各自全局同额 budget_tokens,保证双方考察边界完全一致。
     const thinking: Record<string, unknown> =
       this.thinkingMode === 'max'
         ? { type: 'enabled', budget_tokens: MAX_THINKING_BUDGET_TOKENS }
-        : { type: 'disabled' };
+        : this.thinkingMode === 'high'
+          ? { type: 'enabled', budget_tokens: HIGH_THINKING_BUDGET_TOKENS }
+          : { type: 'disabled' };
     const body = {
       model: this.model,
       // max_tokens 默认省略:交给端点自身的输出上限(适配长思考);显式配置才带上。

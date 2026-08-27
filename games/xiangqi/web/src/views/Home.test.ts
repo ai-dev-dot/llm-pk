@@ -112,13 +112,21 @@ describe('Home 导航行为', () => {
     expect(w.emitted('toGame')?.[0]).toEqual(['g-new']);
     expect(seen).toEqual(['||off']);
 
-    // 切到 max 再开一局 → 请求体带 config.thinkingMode=max(原则 E 二选一)
+    // 切到 max 再开一局 → 请求体带 config.thinkingMode=max(原则 E 三选一)
     await w.get('[data-testid="mode-max"]').trigger('click');
     expect(w.get('[data-testid="mode-max"]').classes()).toContain('on');
     expect(w.get('[data-testid="mode-off"]').classes()).not.toContain('on');
     await w.get('[data-testid="start-game"]').trigger('click');
     await flushPromises();
     expect(seen).toEqual(['||off', '||max']);
+
+    // high 档(mode-high 排在 max 之前):切到 high 再开一局
+    await w.get('[data-testid="mode-high"]').trigger('click');
+    expect(w.get('[data-testid="mode-high"]').classes()).toContain('on');
+    expect(w.get('[data-testid="mode-max"]').classes()).not.toContain('on');
+    await w.get('[data-testid="start-game"]').trigger('click');
+    await flushPromises();
+    expect(seen).toEqual(['||off', '||max', '||high']);
     w.unmount();
   });
 

@@ -12,7 +12,13 @@
 //
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AnthropicPlayer, DEFAULT_TOKENS_PER_M, estimateCostUsd, MAX_THINKING_BUDGET_TOKENS } from './anthropic';
+import {
+  AnthropicPlayer,
+  DEFAULT_TOKENS_PER_M,
+  estimateCostUsd,
+  HIGH_THINKING_BUDGET_TOKENS,
+  MAX_THINKING_BUDGET_TOKENS,
+} from './anthropic';
 import { NetworkError, PlayerCancelled, type MoveContext } from '../arena';
 
 /* ---------- 工具 ---------- */
@@ -450,6 +456,16 @@ describe('思考模式(原则 E)', () => {
     expect(requestOf(fn).body.thinking).toEqual({
       type: 'enabled',
       budget_tokens: MAX_THINKING_BUDGET_TOKENS,
+    });
+  });
+
+  it('high:thinking.type=enabled 且 budget_tokens 为适中常量(比 max 快的折中档)', async () => {
+    const fn = stubFetch(toolUseResponse());
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', thinkingMode: 'high' });
+    await p.pickMove(fakeCtx);
+    expect(requestOf(fn).body.thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: HIGH_THINKING_BUDGET_TOKENS,
     });
   });
 });

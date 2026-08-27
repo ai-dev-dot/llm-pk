@@ -45,8 +45,18 @@ describe('GameView 慢放队列(竞态回归)', () => {
     ws.onmessage!({ data: frame(2, { seq: 2, ts: 't', type: 'move', turn: 'red', move: { from: 'b3', to: 'e3' }, legal: true }) });
     ws.onmessage!({ data: frame(3, { seq: 3, ts: 't', type: 'move', turn: 'black', move: { from: 'h8', to: 'e8' }, legal: true }) });
     ws.onmessage!({ data: frame(4, { seq: 4, ts: 't', type: 'move', turn: 'red', move: { from: 'e3', to: 'e7' }, legal: true }) });
-    // 等慢放队列全部排完(默认 speed=1,每步 hover/path/落子约 1.6s)
-    await new Promise((r) => setTimeout(r, 7000));
+    // 等慢放队列全部排完(默认 speed=1,每步 hover/path/落子约 1.6s):
+    // 轮询而非固定 sleep —— 固定等待在负载高/并行跑时会贴边 flaky,轮询在动画排完的第一刻退出。
+    const target = () => w.find('.pc[data-file="4"][data-rank="6"]').text().includes('砲');
+    const pollUntil = async (pred: () => boolean, timeoutMs = 15000, step = 200): Promise<boolean> => {
+      const t0 = Date.now();
+      while (Date.now() - t0 < timeoutMs) {
+        if (pred()) return true;
+        await new Promise((r) => setTimeout(r, step));
+      }
+      return pred();
+    };
+    expect(await pollUntil(target)).toBe(true);
 
     const e7 = w.find('.pc[data-file="4"][data-rank="6"]');
     expect(e7.exists()).toBe(true);
@@ -56,5 +66,5 @@ describe('GameView 慢放队列(竞态回归)', () => {
     expect(e4.exists()).toBe(true);
     expect(e4.text()).toContain('兵'); // 炮架红兵未被误食
     w.unmount();
-  }, 20000);
+  }, 30000);
 });

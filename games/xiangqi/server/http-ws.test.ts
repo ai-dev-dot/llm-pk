@@ -1034,7 +1034,14 @@ describe('GET /api/logs 与空 body 回落 config', () => {
       const maxBegin = (maxRep.body.events as GameEvent[]).find((e) => e.type === 'begin') as BeginEvent;
       expect(maxBegin.rules?.thinkingMode).toBe('max');
 
-      // 非法枚举 → 回落 off(枚举归一到二值,无第三选项)
+      // 显式 high(适中档)→ 落盘 high
+      const highId = (await request(srv.server).post('/api/games').send({ config: { thinkingMode: 'high' } })).body
+        .id as string;
+      const highRep = await request(srv.server).get(`/api/games/${highId}/replay`);
+      const highBegin = (highRep.body.events as GameEvent[]).find((e) => e.type === 'begin') as BeginEvent;
+      expect(highBegin.rules?.thinkingMode).toBe('high');
+
+      // 非法枚举 → 回落 off(枚举归一到三值,无第四选项)
       const badId = (await request(srv.server).post('/api/games').send({ config: { thinkingMode: 'medium' } })).body
         .id as string;
       const badRep = await request(srv.server).get(`/api/games/${badId}/replay`);
