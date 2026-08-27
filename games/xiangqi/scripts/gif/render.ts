@@ -11,6 +11,12 @@ import { FAMILY } from './fonts';
 export const TICKER_H = 140;
 const MARGIN = 46;
 
+// 行列坐标细字(spec §5):左行号 1..10(rank0 底=1、rank9 顶=10)、上下列标 a..i 对称不镜像。
+// 色取 P.grid2(细色),字号 ~cell*0.18;margin=46≥10px 字号,宽度富余。
+const LABEL_FONT = 0.18;   // 字号 = cell * LABEL_FONT
+const LABEL_PAD = 0.22;    // 上下列标离首末行线的距离 = cell * LABEL_PAD
+const LABEL_INSET = 8;     // 左行号离左格线内缘的距离(px)
+
 // 色板索引 P(与 scripts/gif/palette.ts 顺序严格对应)
 const P = {
   wood0: 0, wood1: 1, wood2: 2, grid: 3, grid2: 4, river: 5,
@@ -74,6 +80,18 @@ export function drawFrame(ctx: SKRSContext2D, frame: Frame, boardSize: number): 
   ctx.font = `${Math.round(cell * 0.34)}px ${FAMILY}`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('楚 河 漢 界', px(4), (py(4) + py(5)) / 2);
+
+  // 行列坐标细字(先于高亮/棋子,落子后仍可见左列号与未遮挡列标)
+  fill(ctx, P.grid2);
+  ctx.font = `${Math.round(cell * LABEL_FONT)}px ${FAMILY}`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'right';
+  for (let r = 0; r <= 9; r++) ctx.fillText(String(r + 1), px(0) - LABEL_INSET, py(r));
+  ctx.textAlign = 'center';
+  for (let f = 0; f <= 8; f++) {
+    ctx.fillText(String.fromCharCode(97 + f), px(f), py(9) + cell * LABEL_PAD);
+    ctx.fillText(String.fromCharCode(97 + f), px(f), py(0) - cell * LABEL_PAD);
+  }
 
   // 高亮格(先于棋子)
   if (frame.from) {

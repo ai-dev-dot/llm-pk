@@ -25,7 +25,10 @@ export function parseLogText(text: string): LogParseResult {
     if (t === '') continue;
     const isLast = i === raw.length - 1;
     try {
-      events.push(JSON.parse(t) as GameEvent);
+      const parsed = JSON.parse(t) as unknown;
+      // 裸 JSON 值(如 `123` / `"str"`)不是事件对象,按坏行处理——避免把标量当事件吞掉。
+      if (typeof parsed !== 'object' || parsed === null) throw new Error('行不是 JSON 对象');
+      events.push(parsed as GameEvent);
     } catch (err) {
       if (isLast && !hardEnded) {
         // 最后一行非换行结尾且解析失败 → 进行中半写,剥离

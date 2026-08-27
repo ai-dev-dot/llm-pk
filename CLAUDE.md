@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cd games/xiangqi
-npm test            # 引擎+服务端单测(235 项,✓)
+npm test            # 引擎+服务端单测(339 项,✓)
 npm test -- engine/notation.test.ts   # 单个测试文件
 npm run test:watch  # 后端口 vitest 监视
 npm run dev         # 后端服务执行(3010,读 config.json,缺配置给提示)
@@ -25,8 +25,8 @@ npm run gif -- <gameId> | --all --width 720 --speed 2 --max-kb 512   # 动图导
 # 前端:
 cd web
 npm run dev         # Vite (5173,代理 /api 与 /ws → 3010)
-npm run test        # 前端单测(68 项)
-npm run typecheck   # vue-tsc 严格类型检查(后端请用 npm -C games/xiangqi exec tsc --noEmit --skipLibCheck)
+npm run test        # 前端单测(92 项)
+npm run typecheck   # vue-tsc 严格类型检查(后端请用 npm -C games/xiangqi exec -- tsc --noEmit --skipLibCheck)
 npm run build       # 产物校验(编译含 .vue)
 ```
 

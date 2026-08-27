@@ -60,6 +60,26 @@ describe('frames.buildFrames', () => {
     expect(land.caption.right.length).toBeGreaterThan(0); // 右段模型名非空
   });
 
+  it('半回合打回按方独立累计、合法落定清零 (a9de9c2 修复点不回归)', () => {
+    const illegal = (seq: number, side: 'red' | 'black', round: number): GameEvent => ({ seq, ts: 't', type: 'illegal-attempt', side, round, reason: '非法走子', violations: { pre: 1, post: 0 } });
+    const evs: GameEvent[] = [
+      b(1),
+      illegal(2, 'red', 1), illegal(3, 'red', 2),          // 红同半回合连续打回 2 次
+      mv(4, 'h3', 'e3', 'red'),                            // 红合法落定 → 红计数停在本回合 2
+      illegal(5, 'black', 1),                              // 黑打回 1 次(换方,黑自 0 起)
+      mv(6, 'h8', 'e8', 'black'),                          // 黑合法落定 → 黑计 1
+      illegal(7, 'red', 1),                                // 红新半回合打回 1 次(由 0 重计)
+      mv(8, 'h2', 'e2', 'red'),                            // 红落定 → 红计 1
+    ];
+    const fr = buildFrames(evs, { speed: 1 });
+    const lands = fr.filter((f) => f.mode === 'land').map((f) => f.caption.rejection);
+    expect(lands).toEqual([2, 1, 1]); // 红2→黑1→红1(换方即归零重计)
+    // 打回事件本身不产生帧、不留「×2 跨半回合累计」:红第 3 步(seq7-8)只记 1
+    const redLands = fr.filter((f) => f.mode === 'land');
+    expect(redLands[0]!.caption.mover).toBe('red');
+    expect(redLands[2]!.caption.mover).toBe('red');
+  });
+
   it('未完成局 final 横幅为「对局进行中」', () => {
     const evs = [b(1), mv(2, 'h3', 'e3', 'red')];
     const fr = buildFrames(evs, { speed: 1 });

@@ -30,6 +30,15 @@ describe('events.parseLogText', () => {
     expect(r.bad[0]!.line).toBe(2);
     expect(r.events.length).toBe(2); // 坏行跳过,其余照收
   });
+
+  it('裸 JSON 值(如 `123`)不是事件对象 → 判坏', () => {
+    const text = `${line(begin)}\n123\n${line({ type: 'check', side: 'black' })}\n`;
+    const r = parseLogText(text);
+    expect(r.bad).toHaveLength(1);
+    expect(r.bad[0]!.line).toBe(2);
+    expect(r.bad[0]!.error).toMatch(/JSON 对象/);
+    expect(r.events.length).toBe(2); // 坏行跳过,其余照收(标量绝不进 events)
+  });
 });
 
 describe('events.readGameEvents', () => {

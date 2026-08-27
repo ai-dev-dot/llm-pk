@@ -1,6 +1,6 @@
 // scripts/gif/cli.test.ts
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs, sanitizeGameId, exportGame } from './cli';
@@ -18,6 +18,10 @@ describe('cli.parseArgs', () => {
   it('--all 无位置参数', () => {
     const r = parseArgs(['--all']);
     expect(r.all).toBe(true);
+  });
+  it('--width 非三档(999)→ 显式报错(与未知参数同 exit 1 口径)', () => {
+    expect(() => parseArgs(['g-1', '--width', '999'])).toThrow(/非法 --width/);
+    expect(() => parseArgs(['g-1', '--width', 'abc'])).toThrow(/非法 --width/);
   });
 });
 
@@ -65,4 +69,30 @@ describe('cli.exportGame', () => {
     expect(res.outputs.length).toBeGreaterThan(1);
     rmSync(dir, { recursive: true, force: true });
   }, 30_000);
+
+  it('中途写盘失败清理:已 rename 的 final 撤销、.tmp 不留(输出目录为空)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'xq-cli-clean-'));
+    const gameId = 'midfail';
+    const logPath = join(dir, `${gameId}.jsonl`);
+    const moves: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      moves.push(JSON.stringify({ type: 'move', turn: i % 2 ? 'black' : 'red', move: { from: 'h3', to: 'e3' }, legal: true }));
+    }
+    writeFileSync(logPath, [JSON.stringify({ type: 'begin', first: 'red', red: { model: 'R' }, black: { model: 'B' } }), ...moves].join('\n') + '\n');
+    const out = join(dir, 'out');
+    // 纯文件系统注入(不 mock):极小预算必定 ≥2 片;把第 2 片 .tmp 路径预建为**目录**,
+    // writeFileSync 向目录写必抛 EISDIR → part1 已 rename 的 final 必须在 catch 中被清掉。
+    mkdirSync(out, { recursive: true });
+    const scaffold = join(out, `${gameId}.part2.gif.tmp`);
+    mkdirSync(scaffold, { recursive: true });
+    try {
+      expect(() => exportGame(logPath, out, { width: 720, speed: 1, maxKb: 1 })).toThrow();
+      const files = readdirSync(out, { withFileTypes: true }).filter((d) => d.isFile()).map((d) => d.name);
+      expect(files).toEqual([]); // 无 .tmp 文件、无已 rename 的最终产物残留
+      rmSync(scaffold, { recursive: true, force: true }); // 摘除注入脚手架后输出目录应为空
+      expect(readdirSync(out)).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
