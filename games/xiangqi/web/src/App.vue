@@ -4,7 +4,7 @@
 // 对局页生命周期由 <GameView :key> 承载(切 id 即重挂,useGame 随之重建订阅);
 // 「重开」= 用上次配置再 create 一局(新 id 重新订阅),后端起新 Arena。
 //
-import { ref } from 'vue';
+import { onBeforeUnmount, ref, watch } from 'vue';
 import NewGameForm from './components/NewGameForm.vue';
 import GameView from './components/GameView.vue';
 import Replay from './views/Replay.vue';
@@ -12,10 +12,40 @@ import { createGame, type NewGameConfig } from './composables/useGame';
 
 type Route =
   | { kind: 'form' }
-  | { kind: 'game'; id: string; config: NewGameConfig }
+  | { kind: 'game'; id: string; config?: NewGameConfig }
   | { kind: 'replay'; id: string };
 
-const route = ref<Route>({ kind: 'form' });
+// 深链(hash 路由):#/g/<id> 直达实时对局、#/r/<id> 直达回放;无 hash(或 #/)为开新局表单。
+// route 变更用 replaceState 写回 hash——不触发 hashchange,天然防回环;地址栏手改 hash 由 onHashChange 接管。
+const EMPTY_CONFIG: NewGameConfig = {
+  red: { baseUrl: '', apiKey: '', model: '' },
+  black: { baseUrl: '', apiKey: '', model: '' },
+};
+
+function parseHash(hash: string): Route {
+  const m = /^#\/(g|r)\/(.+)$/.exec(hash);
+  if (m && m[1] === 'g') return { kind: 'game', id: m[2]! };
+  if (m && m[1] === 'r') return { kind: 'replay', id: m[2]! };
+  return { kind: 'form' };
+}
+
+function toHash(r: Route): string {
+  if (r.kind === 'game') return `#/g/${r.id}`;
+  if (r.kind === 'replay') return `#/r/${r.id}`;
+  return '#/';
+}
+
+const route = ref<Route>(parseHash(typeof location !== 'undefined' ? location.hash : ''));
+watch(route, (r) => {
+  if (typeof history !== 'undefined') history.replaceState(null, '', toHash(r));
+});
+function onHashChange(): void {
+  route.value = parseHash(location.hash);
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('hashchange', onHashChange);
+  onBeforeUnmount(() => window.removeEventListener('hashchange', onHashChange));
+}
 const submitting = ref(false);
 const formError = ref<string | null>(null);
 
@@ -32,9 +62,9 @@ async function launch(config: NewGameConfig): Promise<void> {
   }
 }
 
-// 模板里仅供 game 态出现;non-null 由调用点保证
-function restartWithConfig(cfg: NewGameConfig): void {
-  void launch(cfg);
+// 模板里仅供 game 态出现;深链进入无 config → 空配置(服务端回落 config.json 默认模型)
+function restartWithConfig(cfg?: NewGameConfig): void {
+  void launch(cfg ?? EMPTY_CONFIG);
 }
 </script>
 

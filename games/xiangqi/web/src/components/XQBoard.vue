@@ -144,6 +144,11 @@ const stampKey = computed(() => (toSq.value ? `${stampTick.value}:${toSq.value.f
 function isLastMoveSq(p: PieceRec): boolean {
   return sqIdx(p.file, p.rank) === lastMoveSqIdx.value;
 }
+
+/** 落子弹跳:落点棋子的内层 <g> key 随 stampKey 变化 → 重挂 → land 动画重触发;其余棋子恒 'static' 不重挂。 */
+function landKey(p: PieceRec): string {
+  return isLastMoveSq(p) ? `land:${stampKey.value ?? 'x'}` : 'static';
+}
 </script>
 
 <template>
@@ -196,24 +201,29 @@ function isLastMoveSq(p: PieceRec): boolean {
     <circle v-if="fromSq" class="from-dot" :cx="posX(fromSq.file)" :cy="posY(fromSq.rank)" :r="R - 3" fill="rgba(219,168,100,.28)" />
     <circle v-if="toSq" class="last-dot" :cx="posX(toSq.file)" :cy="posY(toSq.rank)" :r="4.5" fill="#ffd57a" />
     <circle v-if="toSq && stampKey" :key="stampKey" class="stamp anim" :cx="posX(toSq.file)" :cy="posY(toSq.rank)" :r="R + 3" fill="none" stroke="rgba(176,58,38,.85)" stroke-width="2.2" />
+    <circle v-if="toSq && stampKey" :key="`${stampKey}-inner`" class="stamp anim2" :cx="posX(toSq.file)" :cy="posY(toSq.rank)" :r="R - 6" fill="none" stroke="rgba(255,213,122,.9)" stroke-width="1.6" />
 
-    <!-- 棋子 -->
-    <g
-      v-for="p in flatPieces"
-      :key="p.uid"
-      :class="['pc', p.side, { 'last-move': isLastMoveSq(p) }]"
-      :data-side="p.side"
-      :data-type="p.type"
-      :data-file="p.file"
-      :data-rank="p.rank"
-      :style="{ transform: `translate(${posX(p.file)}px, ${posY(p.rank)}px)` }"
-    >
-      <circle :r="R" fill="#f4e3c4" :stroke="p.side === 'red' ? '#8f4633' : '#20201d'" stroke-width="2" filter="url(#ps)" />
-      <circle :r="R - 4" fill="none" :stroke="p.side === 'red' ? 'rgba(143,70,51,.55)' : 'rgba(32,32,29,.5)'" stroke-width="1" />
-      <text y="8" text-anchor="middle" font-size="27" font-weight="600" :fill="p.side === 'red' ? '#a53a26' : '#26221f'">
-        {{ GLYPH[`${p.side}:${p.type}`] ?? '?' }}
-      </text>
-    </g>
+    <!-- 棋子(TransitionGroup:被吃子 leave 淡出;走子同 uid 复用 <g>,transform 补间) -->
+    <TransitionGroup tag="g" name="pc" class="pc-layer">
+      <g
+        v-for="p in flatPieces"
+        :key="p.uid"
+        :class="['pc', p.side, { 'last-move': isLastMoveSq(p) }]"
+        :data-side="p.side"
+        :data-type="p.type"
+        :data-file="p.file"
+        :data-rank="p.rank"
+        :style="{ transform: `translate(${posX(p.file)}px, ${posY(p.rank)}px)` }"
+      >
+        <g :key="landKey(p)" :class="{ 'pc-inner land': isLastMoveSq(p) }">
+          <circle :r="R" fill="#f4e3c4" :stroke="p.side === 'red' ? '#8f4633' : '#20201d'" stroke-width="2" filter="url(#ps)" />
+          <circle :r="R - 4" fill="none" :stroke="p.side === 'red' ? 'rgba(143,70,51,.55)' : 'rgba(32,32,29,.5)'" stroke-width="1" />
+          <text y="8" text-anchor="middle" font-size="27" font-weight="600" :fill="p.side === 'red' ? '#a53a26' : '#26221f'">
+            {{ GLYPH[`${p.side}:${p.type}`] ?? '?' }}
+          </text>
+        </g>
+      </g>
+    </TransitionGroup>
   </svg>
 </template>
 
@@ -222,14 +232,41 @@ function isLastMoveSq(p: PieceRec): boolean {
   display: block;
 }
 
-/* 走子补间(迁自 demo 的 .pc transition) */
+/* 走子补间(迁自 demo 的 .pc transition);被吃子 leave 淡出 */
 .pc {
-  transition: transform 0.3s cubic-bezier(0.3, 0.7, 0.3, 1);
+  transition: transform 0.3s cubic-bezier(0.3, 0.7, 0.3, 1), opacity 0.22s ease-in;
+}
+.pc-leave-active {
+  transition: opacity 0.22s ease-in;
+}
+.pc-leave-to {
+  opacity: 0;
 }
 
 .pc.last-move circle:first-child {
   stroke: #b03a26;
   stroke-width: 2.6;
+  filter: drop-shadow(0 0 5px rgba(255, 180, 90, 0.85));
+}
+
+/* 落子弹跳:内层 <g> 独立于外层 translate 补间,scale 动画不冲突 */
+.pc-inner {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.pc-inner.land {
+  animation: landBounce 0.42s cubic-bezier(0.22, 1.4, 0.36, 1);
+}
+@keyframes landBounce {
+  0% {
+    transform: scale(1.35);
+  }
+  55% {
+    transform: scale(0.92);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 /* 棋子/河界文字用楷体(var 无法作用于 SVG 属性,走 CSS) */
@@ -250,30 +287,80 @@ function isLastMoveSq(p: PieceRec): boolean {
   transform-origin: center;
 }
 
+/* 起点呼吸 / 落点光晕 */
+.from-dot {
+  animation: fromPulse 1.3s ease-in-out infinite;
+}
+@keyframes fromPulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.75;
+  }
+}
+.last-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dotGlow 1.3s ease-in-out infinite;
+}
+@keyframes dotGlow {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.4);
+  }
+}
+
+/* 落点盖章:外圈扩散 + 内圈快速弹开 */
 .stamp.anim {
   animation: stampRing 0.5s ease-out forwards;
 }
-
+.stamp.anim2 {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: stampRing2 0.3s ease-out forwards;
+}
 @keyframes stampRing {
   0% {
-    transform: scale(0.2);
-    opacity: 0.95;
+    transform: scale(0.3);
+    opacity: 1;
   }
-  70% {
-    transform: scale(1.25);
-    opacity: 0.7;
+  60% {
+    transform: scale(1.1);
+    opacity: 0.8;
   }
   100% {
-    transform: scale(1.5);
+    transform: scale(1.45);
+    opacity: 0;
+  }
+}
+@keyframes stampRing2 {
+  0% {
+    transform: scale(0.2);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.2);
     opacity: 0;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pc {
+  .pc,
+  .pc-leave-active {
     transition: none;
   }
-  .stamp.anim {
+  .pc-inner.land,
+  .stamp.anim,
+  .stamp.anim2,
+  .from-dot,
+  .last-dot {
     animation: none;
   }
 }

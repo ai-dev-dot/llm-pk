@@ -37,6 +37,7 @@ function replayEvents(): GameEvent[] {
     ts: 't',
     type: 'begin',
     gameId: 'g1',
+    first: 'red',
     red: { model: 'mR' },
     black: { model: 'mB' },
     rules: { drawRepeat: 3, illegalAttemptsLimit: 3, maxTotalMoves: 200, networkRetries: 3, timeoutMs: 120000, carrySelfAnalysisN: 6, contextBudgetTokens: 32000 },

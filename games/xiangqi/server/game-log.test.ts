@@ -28,6 +28,7 @@ afterEach(async () => {
 const begin = (): GameEventInput => ({
   type: 'begin',
   gameId: 'g1',
+  first: 'red',
   red: { model: 'claude-sonnet-4-5' },
   black: { model: 'claude-sonnet-4-5' },
 });

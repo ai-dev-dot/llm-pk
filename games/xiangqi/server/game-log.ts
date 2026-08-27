@@ -48,6 +48,8 @@ export interface GameRulesSnapshot {
 export interface BeginEvent extends BaseEvent {
   type: 'begin';
   gameId: string;
+  /** 先手方——过程文件的首要事实,显式落盘(象棋恒为 'red')。 */
+  first: Side;
   red: PlayerMeta;
   black: PlayerMeta;
   rules?: GameRulesSnapshot;

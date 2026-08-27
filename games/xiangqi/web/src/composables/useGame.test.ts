@@ -65,6 +65,7 @@ function beginEv(): BeginEvent {
     ts: 't',
     type: 'begin',
     gameId: 'g1',
+    first: 'red',
     red: { model: 'red-m' },
     black: { model: 'black-m' },
     rules: { drawRepeat: 3, illegalAttemptsLimit: 3, maxTotalMoves: 200, networkRetries: 3, timeoutMs: 120000, carrySelfAnalysisN: 6, contextBudgetTokens: 32000 },

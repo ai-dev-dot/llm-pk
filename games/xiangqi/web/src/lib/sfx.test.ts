@@ -11,6 +11,8 @@ describe('sfx 音效模块', () => {
       unlock();
       play('move');
       play('capture');
+      play('check');
+      play('finish');
       playMove();
       playCapture();
     }).not.toThrow();

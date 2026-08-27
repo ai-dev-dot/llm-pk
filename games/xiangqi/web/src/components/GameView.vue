@@ -10,9 +10,8 @@ import XQBoard from './XQBoard.vue';
 import ThoughtPanel from './ThoughtPanel.vue';
 import ReviewPanel from './ReviewPanel.vue';
 import GameControls from './GameControls.vue';
-import { useGame, type NewGameConfig } from '../composables/useGame';
-import type { MoveRecord } from '../composables/useGame';
-import { fmtMs, fmtRound, fmtReason, fmtUsd } from '../lib/format';
+import { useGame, type NewGameConfig, type MoveRecord, type ThoughtEntry } from '../composables/useGame';
+import { fmtMs, fmtRound, fmtReason } from '../lib/format';
 import { play, setMuted, unlock } from '../lib/sfx';
 import type { Side } from '../../../engine/types';
 
@@ -38,11 +37,19 @@ watch(
   (seq, old) => {
     if (seq > 0 && seq !== old) {
       checkFlash.value = true;
+      play('check'); // 将军警示音
       clearTimeout(checkTimer);
       checkTimer = setTimeout(() => {
         checkFlash.value = false;
       }, 1200);
     }
+  },
+);
+// 终局音(phase 进入 finished 一次)
+watch(
+  () => game.phase,
+  (p, old) => {
+    if (p === 'finished' && old !== 'finished') play('finish');
   },
 );
 
@@ -85,7 +92,6 @@ const meta = computed(() => ({
   round: fmtRound(game.moves.length),
   halfMoves: game.moves.length,
   elapsed: fmtMs(game.costSummary.total.elapsedMs),
-  cost: fmtUsd(game.costSummary.total.costUsd),
 }));
 
 const resultText = computed(() => {
@@ -111,7 +117,26 @@ function onToggleMute(): void {
   setMuted(muted.value);
 }
 
-const lastAnalysis = (side: Side): string => game.liveThoughts[side] ?? '';
+// 每方思考历史(最新在前):来自 moves 里该方各步,回合号 = 该步所在全局回合(fmtRound)。
+// 进行中的「当前」由 liveThoughts 单独走 liveText,不混入历史。
+const entries = computed(() => {
+  const build = (side: Side): ThoughtEntry[] => {
+    const out: ThoughtEntry[] = [];
+    for (let i = game.moves.length - 1; i >= 0; i--) {
+      const m = game.moves[i]!;
+      if (m.turn !== side) continue;
+      out.push({
+        round: fmtRound(i + 1),
+        text: m.analysis || m.notation || m.moveCode,
+        elapsedMs: m.elapsedMs,
+        promptTokens: m.usage?.promptTokens,
+        completionTokens: m.usage?.completionTokens,
+      });
+    }
+    return out;
+  };
+  return { red: build('red'), black: build('black') };
+});
 
 function moveLine(m: MoveRecord): string {
   return m.notation ?? m.moveCode;
@@ -141,26 +166,37 @@ function moveLine(m: MoveRecord): string {
       </section>
 
       <aside class="side">
+        <GameControls
+          :status="game.phase"
+          :speed="speed"
+          :muted="muted"
+          @toggle-play="onTogglePlay"
+          @step="onStep"
+          @restart="emit('restart')"
+          @speed="onSpeed"
+          @toggle-mute="onToggleMute"
+        />
+
         <div class="meta-bar">
-          <span class="cell">回合 <b data-testid="meta-round">{{ meta.round }}</b></span>
+          <span class="cell first">先手 <b data-testid="meta-first">{{ game.first === 'red' ? '红方' : '黑方' }}</b></span>
           <span class="divider"></span>
-          <span class="cell">步数 <b data-testid="meta-half">{{ meta.halfMoves }}</b></span>
+          <span class="cell">回合 <b :key="`r${game.moves.length}`" class="tick" data-testid="meta-round">{{ meta.round }}</b></span>
           <span class="divider"></span>
-          <span class="cell">用时 <b>{{ meta.elapsed }}</b></span>
+          <span class="cell">步数 <b :key="`h${game.moves.length}`" class="tick" data-testid="meta-half">{{ meta.halfMoves }}</b></span>
           <span class="divider"></span>
-          <span class="cell cost">成本 <b data-testid="meta-cost">{{ meta.cost }}</b></span>
+          <span class="cell">用时 <b :key="`t${game.moves.length}`" class="tick">{{ meta.elapsed }}</b></span>
         </div>
 
         <ThoughtPanel
           side="red"
           name="红方"
           :model="game.models.red"
-          :text="lastAnalysis('red')"
+          :entries="entries.red"
+          :live-text="game.liveThoughts.red"
           :active="game.thinking.red"
           :elapsed-ms="game.costSummary.red.elapsedMs"
           :prompt-tokens="game.costSummary.red.promptTokens"
           :completion-tokens="game.costSummary.red.completionTokens"
-          :cost-usd="game.costSummary.red.costUsd"
           :rejections="game.rejectCount.red"
           :violations="game.result?.ruleViolations.red"
           :finished="game.phase === 'finished'"
@@ -169,12 +205,12 @@ function moveLine(m: MoveRecord): string {
           side="black"
           name="黑方"
           :model="game.models.black"
-          :text="lastAnalysis('black')"
+          :entries="entries.black"
+          :live-text="game.liveThoughts.black"
           :active="game.thinking.black"
           :elapsed-ms="game.costSummary.black.elapsedMs"
           :prompt-tokens="game.costSummary.black.promptTokens"
           :completion-tokens="game.costSummary.black.completionTokens"
-          :cost-usd="game.costSummary.black.costUsd"
           :rejections="game.rejectCount.black"
           :violations="game.result?.ruleViolations.black"
           :finished="game.phase === 'finished'"
@@ -182,7 +218,7 @@ function moveLine(m: MoveRecord): string {
 
         <div class="log-wrap">
           <div class="log-title">对局履历 <span class="n">{{ game.moves.length }} 步</span></div>
-          <ul class="log-list" data-testid="move-log">
+          <TransitionGroup tag="ul" name="log" class="log-list" data-testid="move-log">
             <li
               v-for="(m, i) in game.moves"
               :key="`${m.seq}:${i}`"
@@ -192,29 +228,17 @@ function moveLine(m: MoveRecord): string {
               <span class="log-seq">{{ i + 1 }}</span>
               <span class="log-move">{{ moveLine(m) }}</span>
               <span class="log-t">{{ m.elapsedMs != null ? fmtMs(m.elapsedMs) : '—' }}</span>
-              <span class="log-cost">{{ m.usage?.costUsd != null ? fmtUsd(m.usage.costUsd) : '' }}</span>
               <span v-if="m.analysis" class="log-a">{{ m.analysis }}</span>
             </li>
-            <li v-if="game.moves.length === 0" class="log-empty" data-testid="log-empty">
+            <li v-if="game.moves.length === 0" key="empty" class="log-empty" data-testid="log-empty">
               {{ game.phase === 'connecting' ? '连接中…' : '尚无着法' }}
             </li>
-          </ul>
+          </TransitionGroup>
         </div>
 
         <ReviewPanel :review="game.review" :game-over="game.phase === 'finished'" />
       </aside>
     </main>
-
-    <GameControls
-      :status="game.phase"
-      :speed="speed"
-      :muted="muted"
-      @toggle-play="onTogglePlay"
-      @step="onStep"
-      @restart="emit('restart')"
-      @speed="onSpeed"
-      @toggle-mute="onToggleMute"
-    />
   </div>
 </template>
 
@@ -225,32 +249,37 @@ function moveLine(m: MoveRecord): string {
   height: 100vh;
 }
 .stage {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 392px;
+  display: flex;
   gap: 18px;
   padding: 18px 24px;
+  flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 @media (max-width: 980px) {
   .stage {
-    grid-template-columns: 1fr;
+    flex-direction: column;
     overflow: visible;
   }
 }
 .board-frame {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: linear-gradient(160deg, var(--wood-1), var(--wood-2));
   border-radius: 10px;
   padding: 14px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.18);
   position: relative;
-  align-self: start;
 }
 .board-frame :deep(svg) {
   display: block;
-  height: calc(100vh - 210px);
+  height: 100%;
   width: auto;
   max-width: 100%;
+  max-height: 100%;
 }
 .board-corner {
   position: absolute;
@@ -353,9 +382,16 @@ function moveLine(m: MoveRecord): string {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  width: 392px;
+  flex: none;
   min-height: 0;
   overflow-y: auto;
   padding-right: 2px;
+}
+@media (max-width: 980px) {
+  .side {
+    width: auto;
+  }
 }
 .side::-webkit-scrollbar {
   width: 6px;
@@ -386,8 +422,41 @@ function moveLine(m: MoveRecord): string {
   font-family: var(--font-mono);
   font-weight: 600;
 }
-.meta-bar .cell.cost b {
-  color: var(--amber);
+.meta-bar .cell.first b {
+  color: var(--red);
+}
+/* meta 数字变化跳动(回合/步数/用时) */
+.meta-bar .cell b.tick {
+  display: inline-block;
+  animation: tickPop 0.3s ease-out;
+}
+@keyframes tickPop {
+  0% {
+    transform: scale(1.4);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+/* 履历新步滑入 */
+.log-enter-active {
+  animation: logIn 0.3s ease-out;
+}
+@keyframes logIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .meta-bar .cell b.tick,
+  .log-enter-active {
+    animation: none;
+  }
 }
 .meta-bar .divider {
   width: 1px;
@@ -432,7 +501,7 @@ function moveLine(m: MoveRecord): string {
 }
 .log-item {
   display: grid;
-  grid-template-columns: 24px 1fr auto auto;
+  grid-template-columns: 24px 1fr auto;
   gap: 8px;
   align-items: baseline;
   font-size: 13px;
@@ -458,14 +527,13 @@ function moveLine(m: MoveRecord): string {
 .log-item.black .log-move {
   color: #e0d4bb;
 }
-.log-t,
-.log-cost {
+.log-t {
   color: var(--ink-soft);
   font-family: var(--font-mono);
   font-size: 11px;
 }
 .log-a {
-  grid-column: 2/5;
+  grid-column: 2/4;
   color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.5;

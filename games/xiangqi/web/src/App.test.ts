@@ -29,6 +29,7 @@ const frame = (seq: number, event: unknown) => JSON.stringify({ seq, event });
 
 afterEach(() => {
   wsInstances.length = 0;
+  window.location.hash = '';
   vi.unstubAllGlobals();
 });
 
@@ -67,7 +68,7 @@ describe('App 全流程冒烟', () => {
     expect(wsInstances[0]!.url).toContain('/ws/games/g-smoke?since=0');
 
     const ws = wsInstances[0]!;
-    ws.onmessage!({ data: frame(1, { seq: 1, ts: 't', type: 'begin', gameId: 'g-smoke', red: { model: 'm-red' }, black: { model: 'm-black' } }) });
+    ws.onmessage!({ data: frame(1, { seq: 1, ts: 't', type: 'begin', gameId: 'g-smoke', first: 'red', red: { model: 'm-red' }, black: { model: 'm-black' } }) });
     ws.onmessage!({
       data: frame(2, {
         seq: 2,
@@ -85,7 +86,8 @@ describe('App 全流程冒烟', () => {
 
     expect(w.findAll('.pc')).toHaveLength(32); // 棋盘点数不变(炮平移,无吃子)
     expect(w.text()).toContain('炮二平五'); // 记谱履历
-    expect(w.get('[data-testid="meta-cost"]').text()).toContain('$0.0031'); // 成本
+    expect(w.text()).toContain('第1回合'); // 红方思考卡:已落子历史标「第1回合」(非「当前」)
+    expect(w.get('[data-testid="meta-first"]').text()).toBe('红方'); // 先手(来自 begin.first)
     expect(w.get('[data-testid="meta-round"]').text()).toBe('1'); // 回合 1
     expect(w.get('[data-testid="meta-half"]').text()).toBe('1'); // 步数 1
 
@@ -100,6 +102,45 @@ describe('App 全流程冒烟', () => {
     await flushPromises();
     expect(restCalls).toContain('/api/games/g-smoke/resume');
 
+    w.unmount();
+  });
+});
+
+describe('App 深链观战(hash 路由)', () => {
+  it('打开 #/g/<id> 直达对局页并订阅该局 WS;地址栏改 #/r/<id> 切回放', async () => {
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request) => {
+        const u = String(url);
+        if (u.endsWith('/replay')) return new Response(JSON.stringify({ id: 'g-deep', events: [] }), { status: 200 });
+        return new Response(JSON.stringify({ id: 'g-deep', status: 'paused', moveCount: 1 }), { status: 200 });
+      }),
+    );
+
+    window.location.hash = '#/g/g-deep';
+    const w = mount(App);
+    await flushPromises();
+
+    // 不经表单直达对局页,WS 订阅深链局
+    expect(w.find('form[data-testid="new-game-form"]').exists()).toBe(false);
+    expect(w.find('[data-testid="controls"]').exists()).toBe(true);
+    expect(wsInstances).toHaveLength(1);
+    expect(wsInstances[0]!.url).toContain('/ws/games/g-deep?since=0');
+
+    // 地址栏 hash 改到回放 → 视图切换
+    window.location.hash = '#/r/g-deep';
+    window.dispatchEvent(new Event('hashchange'));
+    await flushPromises();
+    expect(w.find('[data-testid="replay-view"]').exists()).toBe(true);
+
+    w.unmount();
+  });
+
+  it('无 hash 落回开新局表单', () => {
+    window.location.hash = '#/';
+    const w = mount(App);
+    expect(w.find('form[data-testid="new-game-form"]').exists()).toBe(true);
     w.unmount();
   });
 });

@@ -549,6 +549,7 @@ export class Arena<S = Board, M = Move> {
     this.emit({
       type: 'begin',
       gameId: this.cfg.gameId,
+      first: 'red', // 象棋红先(显式落盘,复盘/观战据此确定先手方)
       red: { model: this.cfg.red.model ?? this.cfg.red.player.model ?? 'unknown' },
       black: { model: this.cfg.black.model ?? this.cfg.black.player.model ?? 'unknown' },
       rules,

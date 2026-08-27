@@ -39,6 +39,7 @@ function sampleEvents(): GameEvent[] {
       ts: '2026-08-26T00:00:00.000Z',
       type: 'begin',
       gameId: 'g-rev',
+      first: 'red',
       red: { model: 'm-red' },
       black: { model: 'm-black' },
       rules: { drawRepeat: 3, illegalAttemptsLimit: 3, maxTotalMoves: 20, networkRetries: 3, timeoutMs: 120000, carrySelfAnalysisN: 6, contextBudgetTokens: 32000 },

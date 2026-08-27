@@ -38,8 +38,8 @@ const stepDisabled = computed(() => props.status !== 'paused');
 </script>
 
 <template>
-  <footer class="controls" data-testid="controls">
-    <div class="ctl-left">
+  <div class="controls" data-testid="controls">
+    <div class="ctl-row">
       <button class="btn pri" :disabled="playDisabled" data-testid="play" @click="emit('toggle-play')">
         {{ playLabel }}
       </button>
@@ -62,22 +62,20 @@ const stepDisabled = computed(() => props.status !== 'paused');
         {{ s }}×
       </button>
     </div>
-    <span class="ctl-hint" data-testid="hint">
-      <span class="dot-mini"></span>实时订阅 · 成本由 usage 实时汇总
-    </span>
-  </footer>
+  </div>
 </template>
 
 <style scoped>
 .controls {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 24px;
-  border-top: 1px solid var(--line);
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
   background: var(--panel);
 }
-.ctl-left {
+.ctl-row {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -88,13 +86,13 @@ const stepDisabled = computed(() => props.status !== 'paused');
   background: var(--panel-2);
   color: var(--ink);
   font-family: var(--font-body);
-  font-size: 13px;
-  padding: 8px 14px;
+  font-size: 12px;
+  padding: 7px 11px;
   border-radius: 9px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   transition: border-color 0.15s, background 0.15s, transform 0.05s;
 }
 .btn:hover:not(:disabled) {
@@ -116,6 +114,7 @@ const stepDisabled = computed(() => props.status !== 'paused');
   border-color: var(--red);
   color: #f6ead6;
   font-weight: 600;
+  flex: 1;
 }
 .btn.pri:hover:not(:disabled) {
   background: var(--red-dim);
@@ -127,6 +126,7 @@ const stepDisabled = computed(() => props.status !== 'paused');
 }
 .seg {
   display: flex;
+  width: 100%;
   border: 1px solid var(--line);
   border-radius: 9px;
   overflow: hidden;
@@ -136,10 +136,11 @@ const stepDisabled = computed(() => props.status !== 'paused');
   border: none;
   background: transparent;
   color: var(--ink-dim);
-  padding: 8px 11px;
+  padding: 6px 11px;
   font-family: var(--font-mono);
   font-size: 12px;
   cursor: pointer;
+  flex: 1;
 }
 .seg button.on {
   background: var(--panel-2);
@@ -147,25 +148,5 @@ const stepDisabled = computed(() => props.status !== 'paused');
 }
 .seg button:hover {
   color: var(--ink);
-}
-.ctl-hint {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--ink-soft);
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.ctl-hint .dot-mini {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--amber);
-  opacity: 0.85;
-}
-@media (max-width: 720px) {
-  .controls {
-    flex-wrap: wrap;
-  }
 }
 </style>

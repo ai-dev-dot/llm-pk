@@ -49,6 +49,15 @@ export interface RejectionRecord {
   reason: string;
 }
 
+/** 单方思考条目(ThoughtPanel 历史渲染):一回合一条,含回合号/文本/耗时/token。成本暂不展示(算不清)。 */
+export interface ThoughtEntry {
+  round: number;
+  text: string;
+  elapsedMs?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+}
+
 export interface SideViolations {
   pre: number;
   post: number;
@@ -178,6 +187,7 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     turn: 'red' as Side,
     thinking: { red: false, black: false } as Record<Side, boolean>,
     models: { red: undefined as string | undefined, black: undefined as string | undefined },
+    first: 'red' as Side, // 先手方(取自 begin.first;旧日志缺省红先)
     checkSeq: 0,
     checkSide: null as Side | null,
     result: null as ResultInfo | null,
@@ -219,6 +229,7 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     switch (e.type) {
       case 'begin': {
         state.phase = 'running';
+        state.first = e.first ?? 'red';
         state.models.red = e.red?.model;
         state.models.black = e.black?.model;
         refreshThinking();
@@ -416,6 +427,7 @@ export interface UseGameState {
   turn: Side;
   thinking: Record<Side, boolean>;
   models: { red: string | undefined; black: string | undefined };
+  first: Side;
   checkSeq: number;
   checkSide: Side | null;
   result: ResultInfo | null;

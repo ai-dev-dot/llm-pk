@@ -1,26 +1,29 @@
 <script setup lang="ts">
 //
-// ThoughtPanel —— 单方思考卡(Task 19)。
-// 沿用 demo 视觉(红/黑卡、busy 扫光、caret 闪烁),展示:模型名、耗时、思考文本、
-// 累计 token / 成本(USD),以及「裁判打回」计数。
+// ThoughtPanel —— 单方思考卡(Task 19 + 信息层次优化)。
+// 展示:模型名、总耗时、思考历史(每回合一条,「第n回合」前缀,最新在前)、
+// 进行中的「当前」流式思考、每回合耗时/token、总 token / 总成本、裁判打回计数。
 //
 import { computed } from 'vue';
 import type { Side } from '../../../engine/types';
-import { fmtMs, fmtUsd } from '../lib/format';
+import { fmtMs } from '../lib/format';
+import type { ThoughtEntry } from '../composables/useGame';
 
 const props = withDefaults(
   defineProps<{
     side: Side;
     name: string;
     model?: string;
-    /** 该方当前展示文本(流式思考/最近一步 analysis),由 useGame.liveThoughts 驱动。 */
-    text: string;
+    /** 该方已落子的思考历史,最新在前(倒序);进行中的「当前」单独走 liveText。 */
+    entries: ThoughtEntry[];
+    /** 进行中的流式思考文本(active 时展示,前缀「当前」;落子后并入 entries 变为「第n回合」)。 */
+    liveText: string;
     /** 是否在思考中(行棋方 & running)。 */
     active: boolean;
+    /** 汇总:该方累计耗时 / token。成本暂不展示(算不清)。 */
     elapsedMs: number;
     promptTokens: number;
     completionTokens: number;
-    costUsd: number;
     rejections: number;
     /** 规则失误分阶段计数(finish 携带;T20):教学前 = 首次被打回前累计,教学后 = 被拒后重犯。 */
     violations?: { pre: number; post: number; total?: number } | null;
@@ -32,6 +35,7 @@ const props = withDefaults(
 
 const totalTokens = computed(() => props.promptTokens + props.completionTokens);
 const glyph = computed(() => (props.side === 'red' ? '帥' : '將'));
+const entryTokens = (e: ThoughtEntry): number => (e.promptTokens ?? 0) + (e.completionTokens ?? 0);
 </script>
 
 <template>
@@ -40,32 +44,41 @@ const glyph = computed(() => (props.side === 'red' ? '帥' : '將'));
       <span class="p-mini" :class="side">{{ glyph }}</span>
       <span class="p-name">{{ name }}</span>
       <span class="p-model">{{ model || '未指定模型' }}</span>
-      <span class="p-time">{{ fmtMs(elapsedMs) }}</span>
+      <span class="p-time" title="该方累计思考总耗时(含所有回合)"><span class="t-label">总耗时</span>{{ fmtMs(elapsedMs) }}</span>
     </div>
 
     <div class="p-state">
       <template v-if="finished">已终局</template>
-      <template v-else-if="active">
-        思考中…<span class="caret" aria-hidden="true"></span>
-      </template>
+      <template v-else-if="active">思考中…<span class="caret" aria-hidden="true"></span></template>
       <template v-else-if="rejections > 0">已遭裁判打回 · 等待对手</template>
       <template v-else>待机</template>
     </div>
 
     <div class="p-think">
-      <slot name="think" :active="active" :text="text">
-        <template v-if="text">{{ text }}<span v-if="active" class="caret" aria-hidden="true"></span></template>
-        <span v-else-if="active" class="placeholder">……</span>
-        <span v-else class="placeholder">尚无思考</span>
-      </slot>
+      <!-- 进行中的当前思考(前缀「当前」;落子后转为「第n回合」并入历史) -->
+      <div v-if="active && liveText" class="t-entry current" data-testid="think-current">
+        <span class="t-tag current">当前</span>
+        <span class="t-text">{{ liveText }}<span class="caret" aria-hidden="true"></span></span>
+      </div>
+      <span v-else-if="active" class="placeholder">……</span>
+
+      <!-- 历史思考(已落子,最新在前:第5回合、第4回合…;新条目滑入) -->
+      <TransitionGroup v-else-if="entries.length" tag="ul" name="entry" class="t-list" data-testid="think-history">
+        <li v-for="(e, i) in entries" :key="e.round" class="t-entry" :class="{ latest: i === 0 }">
+          <span class="t-tag">第{{ e.round }}回合</span>
+          <span class="t-text">{{ e.text }}</span>
+          <span class="t-meta">
+            <span v-if="e.elapsedMs != null" class="tm-cell" :title="`第${e.round}回合耗时`">{{ fmtMs(e.elapsedMs) }}</span>
+            <span v-if="entryTokens(e) > 0" class="tm-cell" :title="`第${e.round}回合 token(输入+输出)`">{{ entryTokens(e) }}</span>
+          </span>
+        </li>
+      </TransitionGroup>
+      <span v-else class="placeholder">尚无思考</span>
     </div>
 
     <div class="p-meta">
       <span class="m-cell" title="累计 token(输入+输出)">
-        <span class="m-label">token</span>{{ totalTokens }}
-      </span>
-      <span class="m-cell" title="累计思考成本">
-        <span class="m-label">成本</span>{{ fmtUsd(costUsd) }}
+        <span class="m-label">总token</span>{{ totalTokens }}
       </span>
       <span v-if="violations && violations.pre + violations.post > 0" class="viol" data-testid="viol-badge" title="规则失误分阶段:教学前=首次被打回前累计;教学后=被拒后重犯">
         教学前 ×{{ violations.pre }} · 教学后 ×{{ violations.post }}
@@ -137,6 +150,15 @@ const glyph = computed(() => (props.side === 'red' ? '帥' : '將'));
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--ink-dim);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.p-time .t-label {
+  font-family: var(--font-body);
+  font-size: 10px;
+  color: var(--ink-soft);
+  letter-spacing: 0.08em;
 }
 .p-mini {
   width: 18px;
@@ -187,11 +209,90 @@ const glyph = computed(() => (props.side === 'red' ? '帥' : '將'));
   min-height: 56px;
   border-top: 1px dashed var(--line);
   padding-top: 9px;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 .p-think .placeholder {
   color: var(--ink-soft);
+}
+.t-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* 新思考条目进场:轻滑入 + 淡入 */
+.entry-enter-active {
+  animation: entryIn 0.3s ease-out;
+}
+@keyframes entryIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .entry-enter-active {
+    animation: none;
+  }
+}
+.t-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.t-entry + .t-entry {
+  border-top: 1px dashed var(--line);
+  padding-top: 8px;
+}
+.t-entry.current {
+  background: linear-gradient(180deg, rgba(201, 138, 58, 0.08), transparent);
+  border: 1px solid rgba(201, 138, 58, 0.35);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 2px;
+}
+.t-tag {
+  align-self: flex-start;
+  font-family: var(--font-body);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1px 7px;
+  background: var(--panel-2);
+}
+.t-tag.current {
+  color: var(--amber);
+  border-color: rgba(201, 138, 58, 0.6);
+  background: rgba(201, 138, 58, 0.1);
+  font-weight: 600;
+}
+.t-text {
+  font-family: var(--font-display);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.t-meta {
+  display: flex;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-soft);
+}
+.tm-cell {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  padding: 1px 6px;
+  border-radius: 6px;
 }
 .p-meta {
   display: flex;

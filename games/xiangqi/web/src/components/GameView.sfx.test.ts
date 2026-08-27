@@ -57,6 +57,23 @@ describe('GameView 音效接线 B5', () => {
     expect(play).toHaveBeenLastCalledWith('capture');
   });
 
+  it('check 事件 → play("check");finish 事件 → play("finish")', async () => {
+    vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
+    mount(GameView, { props: { gameId: 'g-sfx' } });
+    const ws = wsInstances[0]!;
+    ws.onmessage!({ data: frame(1, beginEv()) });
+
+    ws.onmessage!({ data: frame(2, { seq: 2, ts: 't', type: 'check', side: 'black' }) });
+    await flushPromises();
+    expect(play).toHaveBeenLastCalledWith('check');
+
+    ws.onmessage!({
+      data: frame(3, { seq: 3, ts: 't', type: 'finish', winner: 'red', reason: 'checkmate', ruleViolations: { red: { pre: 0, post: 0 }, black: { pre: 0, post: 1 } } }),
+    });
+    await flushPromises();
+    expect(play).toHaveBeenLastCalledWith('finish');
+  });
+
   it('静音钮切换 → setMuted 真 toggle(且经手势解锁)', async () => {
     vi.stubGlobal('WebSocket', FakeWs as unknown as typeof WebSocket);
     const w = mount(GameView, { props: { gameId: 'g-sfx' } });

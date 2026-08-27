@@ -74,6 +74,7 @@ function buildDigest(events: GameEvent[]): string {
   L.push('');
   if (begin) {
     L.push(`对局模型: 红=${begin.red.model} 黑=${begin.black.model}`);
+    L.push(`先手方: ${begin.first === 'red' ? '红方' : '黑方'}`);
     L.push('');
   }
   let half = 0;
