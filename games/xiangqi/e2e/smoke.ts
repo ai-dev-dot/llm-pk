@@ -317,7 +317,8 @@ async function main(): Promise<void> {
 
     console.log('\n[场景 A] 红方连续非法 → 判负');
     mode = 'illegal-red';
-    const idA = await createGame(port, baseBody({ config: { maxTotalMoves: 200 } }));
+    // 断言按 3 次打回写死(pre=1/post=2);arena 默认上限已改为 10,须显式对齐 3。
+    const idA = await createGame(port, baseBody({ config: { illegalAttemptsLimit: 3, maxTotalMoves: 200 } }));
     await waitForFinish(srv, idA);
     await scenarioA(port, srv, idA);
 
