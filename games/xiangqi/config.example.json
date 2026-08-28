@@ -6,7 +6,8 @@
       "model": "GLM-5.3-Flash",
       "protocol": "openai",
       "thinking": { "thinking": { "type": "enabled" }, "reasoning_effort": "high" },
-      "max_tokens": 16384
+      "max_tokens": 32768,
+      "stream": true
     },
     "deepseek-v4-flash": {
       "base_url": "https://ark.cn-beijing.volces.com/api/coding",
@@ -24,7 +25,7 @@
   "red": { "use": "GLM-5.3-Flash" },
   "black": { "use": "deepseek-v4-flash" },
   "review": { "use": "deepseek-v4-flash" },
-  "rules": { "thinkingMode": "max" },
+  "rules": { "thinkingMode": "max", "carrySelfAnalysisN": 3 },
   "steps": 100,
   "timeout_minutes": 15
 }

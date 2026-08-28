@@ -67,6 +67,11 @@ export interface OpenAIPlayerConfig {
   tokensPerM?: TokensPerM;
   /** 思考字段透传片段(config `models.<name>.thinking`),整段展开进请求体顶层。 */
   thinking?: Record<string, unknown>;
+  /**
+   * 流式(SSE):思考增量(reasoning_content)持续回传,连接不空闲 -> 规避网关约 5 分钟空闲超时掐断
+   * (GLM coding 端点非流式长请求实测必断;2026-08-28 探针证实流式 6.3 分钟无断)。
+   */
+  stream?: boolean;
   debugLog?: DebugLogSink;
   /** 构造契约占位(透传 arena),本层不自行重试。 */
   networkRetryBaseDelayMs?: number;
@@ -131,7 +136,8 @@ function parseChat(text: string, tokensPerM: TokensPerM): ChatParsed {
 
 /**
  * OpenAI 协议棋手 —— 与 AnthropicPlayer 行为对齐(网络重试交 arena、pause 中止、打回语义)。
- * 不支持流式(SSE)路径:GLM/OpenAI 原生非流式即遵守 max_tokens,需实时思考再另行扩展。
+ * 流式(`stream: true`)走 SSE:delta.reasoning_content -> ctx.onThought 实时思考,
+ * delta.tool_calls[0].function.arguments 增量拼接出 {analysis,move};usage 随末包返回。
  */
 export class OpenAIPlayer implements Player {
   public readonly side: Side;
@@ -148,6 +154,7 @@ export class OpenAIPlayer implements Player {
   private readonly tokensPerM: TokensPerM;
   private readonly systemPrompt?: string;
   private readonly thinking?: Record<string, unknown>;
+  private readonly stream: boolean;
   private readonly debugLog?: DebugLogSink;
   private ctl: AbortController | null = null;
   private cancelled = false;
@@ -162,6 +169,7 @@ export class OpenAIPlayer implements Player {
     this.tokensPerM = cfg.tokensPerM ?? DEFAULT_TOKENS_PER_M;
     this.systemPrompt = cfg.systemPrompt;
     this.thinking = cfg.thinking;
+    this.stream = cfg.stream ?? false;
     this.debugLog = cfg.debugLog;
     this.networkRetryBaseDelayMs = cfg.networkRetryBaseDelayMs;
   }
@@ -179,7 +187,7 @@ export class OpenAIPlayer implements Player {
     // G3c:length(截断)/stop(主动结束未出招)且无 move → 带提示重发,最多 MAX_TRUNCATE_RETRY 次。
     for (let attempt = 0; ; attempt++) {
       const user = attempt === 0 ? baseUser : `${baseUser}\n\n${TRUNCATED_HINT}`;
-      const parsed = await this.callOnce(system, user, attempt);
+      const parsed = await this.callOnce(system, user, attempt, ctx.onThought);
       if (parsed.usage) this.lastUsage = parsed.usage;
       const missingMove = parsed.move === '';
       const retryNoTool =
@@ -205,10 +213,16 @@ export class OpenAIPlayer implements Player {
     });
   }
 
-  private async callOnce(system: string, user: string, attempt: number): Promise<ChatParsed> {
+  private async callOnce(
+    system: string,
+    user: string,
+    attempt: number,
+    onThought?: (chunk: string) => void,
+  ): Promise<ChatParsed> {
     const body = {
       model: this.model,
       ...(this.maxTokens ? { max_tokens: this.maxTokens } : {}),
+      ...(this.stream ? { stream: true } : {}),
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
@@ -266,6 +280,9 @@ export class OpenAIPlayer implements Player {
 
     let parsed: ChatParsed;
     let text: string;
+    if (this.stream) {
+      return await this.readStream(res, timer, attempt, reqStart, onThought);
+    }
     try {
       text = await consumeTextSafe(res);
       parsed = parseChat(text, this.tokensPerM);
@@ -290,6 +307,134 @@ export class OpenAIPlayer implements Player {
       status: res.status,
       ok: true,
       rawText: rawBodyForDebug(text),
+      extracted: { analysis: parsed.analysis, move: parsed.move, finishReason: parsed.finishReason, usage: parsed.usage },
+      elapsedMs: Date.now() - reqStart,
+    });
+    return parsed;
+  }
+
+  /**
+   * 流式读取(chat/completions SSE):逐 event 拼接 delta(reasoning_content 思考 /
+   * tool_calls[0].function.arguments 工具参数),usage 与 finish_reason 随末包;
+   * 思考增量经 onThought 推流(带 ~1s/120 字符节流,GLM 万级碎块不淹没 WS)。
+   */
+  private async readStream(
+    res: Response,
+    timer: ReturnType<typeof setTimeout>,
+    attempt: number,
+    reqStart: number,
+    onThought?: (chunk: string) => void,
+  ): Promise<ChatParsed> {
+    const ts = (): string => new Date().toISOString();
+    let reasoning = '';
+    let content = '';
+    let toolArgs = '';
+    let finishReason: string | undefined;
+    let usageRaw: Record<string, unknown> = {};
+    let chunkCount = 0;
+    // onThought 节流:pending 攒到 120 字符或距上次推送 >=1s 才发
+    let pending = '';
+    let lastEmit = Date.now();
+    const emit = (force = false): void => {
+      if (!onThought || pending === '') return;
+      if (!force && pending.length < 120 && Date.now() - lastEmit < 1000) return;
+      onThought(pending);
+      pending = '';
+      lastEmit = Date.now();
+    };
+    try {
+      if (!res.body) throw new NetworkError('流式响应无 body', true);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          const s = line.trim();
+          if (!s.startsWith('data:')) continue;
+          const payload = s.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          let d: Record<string, unknown>;
+          try {
+            d = JSON.parse(payload) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          chunkCount++;
+          const choice = (Array.isArray(d.choices) ? (d.choices[0] as Record<string, unknown>) : undefined) ?? {};
+          const delta = (choice.delta ?? {}) as Record<string, unknown>;
+          if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
+            reasoning += delta.reasoning_content;
+            pending += delta.reasoning_content;
+            emit();
+          }
+          if (typeof delta.content === 'string' && delta.content) content += delta.content;
+          const tc = Array.isArray(delta.tool_calls) ? (delta.tool_calls[0] as Record<string, unknown>) : undefined;
+          const fn = (tc?.function ?? {}) as Record<string, unknown>;
+          if (typeof fn.arguments === 'string' && fn.arguments) toolArgs += fn.arguments;
+          if (typeof choice.finish_reason === 'string' && choice.finish_reason) finishReason = choice.finish_reason;
+          if (d.usage && typeof d.usage === 'object') usageRaw = d.usage as Record<string, unknown>;
+        }
+      }
+      emit(true);
+    } catch (err) {
+      if (err instanceof NetworkError) throw err;
+      if (err instanceof Error && err.name === 'AbortError') {
+        if (this.cancelled) throw new PlayerCancelled('回合被暂停中止');
+        this.writeError(attempt, 'api-timeout', `api timeout(>${this.timeoutMs}ms)`, true);
+        throw new NetworkError(`api timeout(>${this.timeoutMs}ms)`, true, 'request-timeout');
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      this.writeError(attempt, 'read-body', `读流失败: ${msg}`, true);
+      throw new NetworkError(`读流失败: ${msg}`, true);
+    } finally {
+      clearTimeout(timer);
+      this.ctl = null;
+    }
+    // tool 参数解析(与 parseChat 同语义:arguments 非 JSON -> 空 move 交 arena 打回)
+    let analysis = '';
+    let move = '';
+    if (toolArgs) {
+      try {
+        const args = JSON.parse(toolArgs) as Record<string, unknown>;
+        analysis = typeof args.analysis === 'string' ? args.analysis : '';
+        move = typeof args.move === 'string' ? args.move : '';
+      } catch {
+        /* arguments 非 JSON -> 空 move,走打回 */
+      }
+    }
+    const promptTokens = toNum(usageRaw.prompt_tokens);
+    const completionTokens = toNum(usageRaw.completion_tokens);
+    const parsed: ChatParsed = {
+      analysis,
+      move,
+      usage: { promptTokens, completionTokens, costUsd: estimateCostUsd(promptTokens, completionTokens, this.tokensPerM) },
+      finishReason,
+    };
+    // debug:流式记「等价完整交互」(思考全文 + 工具参数 + usage),与非流式 rawText 语义对齐
+    this.debugLog?.write({
+      kind: 'player-response',
+      protocol: 'openai',
+      ts: ts(),
+      attempt,
+      status: res.status,
+      ok: true,
+      streamed: true,
+      rawText: rawBodyForDebug(
+        JSON.stringify({
+          streamed: true,
+          chunks: chunkCount,
+          reasoning,
+          content,
+          tool_arguments: toolArgs,
+          finish_reason: finishReason,
+          usage: usageRaw,
+        }),
+      ),
       extracted: { analysis: parsed.analysis, move: parsed.move, finishReason: parsed.finishReason, usage: parsed.usage },
       elapsedMs: Date.now() - reqStart,
     });

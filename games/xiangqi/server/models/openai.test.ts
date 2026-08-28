@@ -60,8 +60,8 @@ function noToolResp(finish = 'stop'): Response {
   );
 }
 
-function stubFetch(body: Response | (() => Promise<Response>)): ReturnType<typeof vi.fn> {
-  const fn = vi.fn(typeof body === 'function' ? body : async () => body);
+function stubFetch(body: Response | (() => Response | Promise<Response>)): ReturnType<typeof vi.fn> {
+  const fn = vi.fn(typeof body === 'function' ? body : (async () => body) as () => Promise<Response>);
   vi.stubGlobal('fetch', fn);
   return fn;
 }
@@ -244,5 +244,99 @@ describe('OpenAIPlayer 调试日志(debugLog)', () => {
     expect(resp['kind']).toBe('player-response');
     expect(resp['status']).toBe(401);
     expect(resp['ok']).toBe(false);
+  });
+});
+/* ---------- 流式(SSE):长思考防网关空闲掐断 ---------- */
+
+function sseResp(events: Record<string, unknown>[]): Response {
+  const text = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n';
+  return new Response(text, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+describe('OpenAIPlayer 流式(stream: true)', () => {
+  it('SSE 增量拼接出招:请求体带 stream:true;tool 参数分段拼接;usage 取末包', async () => {
+    const args = JSON.stringify({ analysis: '中炮直车', move: 'h3-e3' });
+    const half = Math.floor(args.length / 2);
+    const fn = stubFetch(() =>
+      sseResp([
+        { choices: [{ index: 0, delta: { reasoning_content: '思考A' } }] },
+        { choices: [{ index: 0, delta: { reasoning_content: '思考B' } }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(0, half) } }] } }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: args.slice(half) } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
+        { choices: [], usage: { prompt_tokens: 111, completion_tokens: 222 } },
+      ]),
+    );
+    const picked = await mkPlayer({ stream: true }).pickMove(fakeCtx);
+    expect(picked.move).toBe('h3-e3');
+    expect(picked.analysis).toBe('中炮直车');
+    expect(picked.usage?.promptTokens).toBe(111);
+    expect(picked.usage?.completionTokens).toBe(222);
+    const { body } = requestOf(fn);
+    expect(body.stream).toBe(true);
+  });
+
+  it('reasoning_content 经 onThought 推流(节流);默认关流式时不带 stream 字段', async () => {
+    const onThought = vi.fn();
+    const args = JSON.stringify({ analysis: 'x', move: 'a1-a2' });
+    const long = '长'.repeat(200); // 超过节流阈值(120 字符)必推
+    const fn = stubFetch(() =>
+      sseResp([
+        { choices: [{ index: 0, delta: { reasoning_content: long } }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: args } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
+        { choices: [], usage: { prompt_tokens: 1, completion_tokens: 2 } },
+      ]),
+    );
+    await mkPlayer({ stream: true }).pickMove({ ...fakeCtx, onThought });
+    expect(onThought).toHaveBeenCalled();
+    const pushed = onThought.mock.calls.map((c) => String(c[0])).join('');
+    expect(pushed).toContain('长');
+    // 默认(非流式)请求体不带 stream
+    const fn2 = stubFetch(() => chatResp());
+    await mkPlayer().pickMove(fakeCtx);
+    expect(requestOf(fn2).body.stream).toBeUndefined();
+  });
+
+  it('流式 finish=length 无 move -> G3c 带提示重发(第二次仍流式)', async () => {
+    const args = JSON.stringify({ analysis: 'x', move: 'a1-a2' });
+    // 默认实现=成功出招;第一次调用被 mockImplementationOnce 覆盖为 length 截断
+    const seq = vi.fn(async () =>
+      sseResp([
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: args } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
+        { choices: [], usage: { prompt_tokens: 20, completion_tokens: 30 } },
+      ]),
+    ).mockImplementationOnce(async () =>
+      sseResp([
+        { choices: [{ index: 0, delta: { reasoning_content: '想不完' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'length' }] },
+        { choices: [], usage: { prompt_tokens: 10, completion_tokens: 99 } },
+      ]),
+    );
+    vi.stubGlobal('fetch', seq);
+    const picked = await mkPlayer({ stream: true }).pickMove(fakeCtx);
+    expect(picked.move).toBe('a1-a2');
+    expect(seq).toHaveBeenCalledTimes(2);
+    const second = requestOf(seq, 1);
+    expect(second.body.stream).toBe(true);
+    expect(String(second.body.messages[1].content)).toContain('没有完成工具调用');
+  });
+
+  it('流式读流中断 -> NetworkError(retryable)', async () => {
+    const broken = new Response(
+      new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"reasoning_content":"x"}}]}\n\n'));
+          c.error(new TypeError('fetch failed'));
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    );
+    vi.stubGlobal('fetch', vi.fn(async () => broken));
+    await expect(mkPlayer({ stream: true }).pickMove(fakeCtx)).rejects.toMatchObject({
+      name: 'NetworkError',
+      retryable: true,
+    });
   });
 });

@@ -6,8 +6,8 @@
 // - 返回按 `updatedAt` 倒序(最新在前)。
 //
 
-import { basename, join } from 'node:path';
-import { readFileSync, readdirSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import type { GameEvent } from './game-log';
 
 export interface ArchivedGame {
@@ -84,5 +84,44 @@ export function scanLogs(logDir: string): ArchivedGame[] {
     });
   }
   out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  return out;
+}
+/**
+ * 终局存档:对局 log 复制到 `archive/`(随 git 入库),双方 debug log 复制到 `archive_debug/`(gitignore,不入库)。
+ * - 目标目录:均为 `dirname(logDir)` 下的平级目录(与 debug_logs 同级);
+ * - 只复制存在的文件(主 log 必在;debug log 可能因未触网/模型同侧缺文件);
+ * - 同名覆盖(同 id 重新存档以本次为准);返回按目录分组的文件名列表(basename)。
+ */
+export interface ArchiveResult {
+  /** 对局事件 log 文件名列表(archive/,随 git 入库)。 */
+  logFiles: string[];
+  /** 双方 debug log 文件名列表(archive_debug/,gitignore 不入库)。 */
+  debugFiles: string[];
+}
+
+export function archiveGameFiles(logDir: string, debugLogDir: string, id: string): ArchiveResult {
+  const archiveDir = join(dirname(logDir), 'archive');
+  const debugArchiveDir = join(dirname(logDir), 'archive_debug');
+  mkdirSync(archiveDir, { recursive: true });
+  mkdirSync(debugArchiveDir, { recursive: true });
+  const out: ArchiveResult = { logFiles: [], debugFiles: [] };
+  const copy = (from: string, to: string): void => {
+    copyFileSync(from, to);
+  };
+  const main = join(logDir, `${id}.jsonl`);
+  if (existsSync(main)) {
+    copy(main, join(archiveDir, `${id}.jsonl`));
+    out.logFiles.push(basename(main));
+  }
+  let debugNames: string[] = [];
+  try {
+    debugNames = readdirSync(debugLogDir).filter((n) => n.startsWith(`${id}_`) && n.endsWith('.jsonl'));
+  } catch {
+    /* debug 目录不存在/为空 → 跳过 */
+  }
+  for (const name of debugNames) {
+    copy(join(debugLogDir, name), join(debugArchiveDir, name));
+    out.debugFiles.push(name);
+  }
   return out;
 }

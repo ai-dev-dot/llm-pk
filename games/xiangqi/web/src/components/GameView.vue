@@ -105,6 +105,32 @@ watch(
   { immediate: true },
 );
 
+/* ---------- 终局存档(存 archive/;不存则提示手动复制路径) ---------- */
+const archiving = ref(false);
+const archiveMsg = ref('');
+const archiveErr = ref(false);
+async function onArchive(): Promise<void> {
+  if (archiving.value) return;
+  archiving.value = true;
+  archiveMsg.value = '';
+  archiveErr.value = false;
+  try {
+    const r = await game.controls.archive();
+    archiveMsg.value =
+      `对局日志 ${r.logFiles.length} 个 → archive/(随 git 入库);` +
+      `调试日志 ${r.debugFiles.length} 个 → archive_debug/(不入库,本地留存)`;
+  } catch (e) {
+    archiveErr.value = true;
+    archiveMsg.value = `存档失败:${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    archiving.value = false;
+  }
+}
+function onSkipArchive(): void {
+  archiveErr.value = false;
+  archiveMsg.value = '未存档。可手动复制 logs/ 与 debug_logs/ 下对应文件';
+}
+
 onBeforeUnmount(() => {
   destroyed = true;
   game.controls.destroy();
@@ -343,8 +369,6 @@ function moveLine(m: MoveRecord): string {
         <div class="meta-bar">
           <span class="cell first">先手 <b data-testid="meta-first">{{ game.first === 'red' ? '红方' : '黑方' }}</b></span>
           <span class="divider"></span>
-          <span class="cell">思考 <b data-testid="meta-thinking">{{ game.thinkingMode ?? 'off' }}</b></span>
-          <span class="divider"></span>
           <span class="cell">回合 <b :key="`r${game.moves.length}`" class="tick" data-testid="meta-round">{{ meta.round }}</b></span>
           <span class="divider"></span>
           <span class="cell">步数 <b :key="`h${game.moves.length}`" class="tick" data-testid="meta-half">{{ meta.halfMoves }}</b></span>
@@ -408,6 +432,15 @@ function moveLine(m: MoveRecord): string {
                 红方打回 {{ game.result.ruleViolations.red.total }} · 黑方打回 {{ game.result.ruleViolations.black.total }}
               </div>
               <div class="note">单局 · 未换色,胜负不作模型强弱结论</div>
+              <div class="archive-row">
+                <button class="btn" :disabled="archiving" data-testid="archive-btn" @click="onArchive">
+                  {{ archiving ? '存档中…' : '存档本局' }}
+                </button>
+                <button class="btn ghost" data-testid="archive-skip-btn" @click="onSkipArchive">不存档</button>
+              </div>
+              <div v-if="archiveMsg" class="archive-note" :class="{ err: archiveErr }" data-testid="archive-msg">
+                {{ archiveMsg }}
+              </div>
             </template>
           </div>
           <span class="board-corner">live</span>
@@ -678,6 +711,25 @@ function moveLine(m: MoveRecord): string {
   font-size: 11px;
   letter-spacing: 0.08em;
   margin-top: 6px;
+}
+.end-banner .archive-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+.end-banner .btn.ghost {
+  background: transparent;
+  border-color: var(--ink-soft);
+  color: var(--ink-soft);
+}
+.end-banner .archive-note {
+  color: var(--amber);
+  font-size: 11px;
+  max-width: 300px;
+  line-height: 1.5;
+}
+.end-banner .archive-note.err {
+  color: #e8a0a0;
 }
 .err-banner {
   position: absolute;

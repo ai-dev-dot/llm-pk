@@ -17,9 +17,9 @@ import http from 'node:http';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import WebSocket from 'ws';
 import request from 'supertest';
 import { createXiangqiServer, type GameRecord, type ResolvedSide, type ServerDefaults } from './http';
@@ -98,6 +98,8 @@ interface TestServer {
   store: Map<string, GameRecord>;
   /** 测试注入/推导的调试日志目录(与 logDir 平级语义)。 */
   debugLogDir: string;
+  /** 日志目录(archive 端点在 dirname(logDir)/archive 落盘)。 */
+  logDir: string;
   dispose: () => Promise<void>;
 }
 
@@ -120,6 +122,8 @@ async function startServer(
   srv.server.listen(0);
   await new Promise<void>((res) => srv.server.once('listening', () => res()));
   const port = (srv.server.address() as AddressInfo).port;
+  const archiveDir = join(dirname(logDir), 'archive');
+  const debugArchiveDir = join(dirname(logDir), 'archive_debug');
   const dispose = async () => {
     // 先显式中止全部对局(判和收尾),再等一拍让被唤醒的 drive 微任务落盘,最后清理目录
     for (const r of srv.store.values()) srv.registry.dispose(r.id);
@@ -129,8 +133,18 @@ async function startServer(
     await new Promise<void>((res) => srv.server.close(() => res()));
     await rm(logDir, { recursive: true, force: true });
     await rm(dLogDir, { recursive: true, force: true });
+    await rm(archiveDir, { recursive: true, force: true });
+    await rm(debugArchiveDir, { recursive: true, force: true });
   };
-  return { server: srv.server, port, registry: srv.registry, store: srv.store, debugLogDir: dLogDir, dispose };
+  return {
+    server: srv.server,
+    port,
+    registry: srv.registry,
+    store: srv.store,
+    debugLogDir: dLogDir,
+    logDir,
+    dispose,
+  };
 }
 
 /** 基础建局请求体:红黑各 baseUrl/apiKey/model(必填)。 */
@@ -634,6 +648,74 @@ describe('GET /api/games/:id/replay', () => {
       expect(moves[1]).toMatchObject({ turn: 'black' });
       const fin = events[events.length - 1]!;
       expect(fin).toMatchObject({ type: 'finish', winner: 'draw', reason: 'draw-max-moves' });
+    } finally {
+      await srv.dispose();
+    }
+  });
+});
+
+/* ---------- 终局存档 ---------- */
+
+describe('POST /api/games/:id/archive(终局存档)', () => {
+  it('finish 后存档:主 log + 双方 debug log 复制到 dirname(logDir)/archive,内容与源一致', async () => {
+    const srv = await startServer((side) =>
+      side === 'red' ? scriptPlayer('red', ['a4-a5', 'c4-c5']) : scriptPlayer('black', ['i7-i6', 'g7-g6']),
+    );
+    try {
+      const { id } = await createGame(srv.server, baseBody({ config: { maxTotalMoves: 2 } }));
+      const arena = srv.registry.get(id)!;
+      await waitFor(() => arena.state === 'finished');
+
+      // 脚本化 player 不写 debug sink;手动造两个模拟 debug 文件(与 metaDebugSink 命名一致)
+      writeFileSync(join(srv.debugLogDir, `${id}_m-red.jsonl`), '{"red":1}\n');
+      writeFileSync(join(srv.debugLogDir, `${id}_m-black.jsonl`), '{"black":1}\n');
+
+      const res = await request(srv.server).post(`/api/games/${id}/archive`);
+      expect(res.status).toBe(200);
+      const body = res.body as { id: string; logFiles: string[]; debugFiles: string[] };
+      expect(body.id).toBe(id);
+      // 主 log → archive/(入库);双方 debug log → archive_debug/(不入库)
+      expect(body.logFiles).toEqual([`${id}.jsonl`]);
+      expect(body.debugFiles).toHaveLength(2);
+      const logCopied = body.logFiles.filter((f) => f === `${id}.jsonl`);
+      expect(logCopied).toHaveLength(1);
+
+      const archiveDir = join(dirname(srv.logDir), 'archive');
+      const debugArchiveDir = join(dirname(srv.logDir), 'archive_debug');
+      for (const f of body.logFiles) {
+        const src = join(srv.logDir, f);
+        expect(existsSync(src), `源文件存在: ${f}`).toBe(true);
+        expect(readFileSync(join(archiveDir, f), 'utf8')).toBe(readFileSync(src, 'utf8'));
+      }
+      for (const f of body.debugFiles) {
+        const src = join(srv.debugLogDir, f);
+        expect(existsSync(src), `源文件存在: ${f}`).toBe(true);
+        expect(readFileSync(join(debugArchiveDir, f), 'utf8')).toBe(readFileSync(src, 'utf8'));
+      }
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('存档不存在的对局 → 404;不存在 debug 文件时只复制主 log', async () => {
+    const srv = await startServer(
+      (side) => (side === 'red' ? scriptPlayer('red', ['a4-a5', 'c4-c5']) : scriptPlayer('black', ['i7-i6', 'g7-g6'])),
+      undefined,
+      undefined,
+      // 注入空 debug 目录(该局无 debug 文件)→ 存档只含主 log
+      await mkdtemp(join(tmpdir(), 'xiangqi-debug-empty-')),
+    );
+    try {
+      const miss = await request(srv.server).post('/api/games/not-exist/archive');
+      expect(miss.status).toBe(404);
+
+      const { id } = await createGame(srv.server, baseBody({ config: { maxTotalMoves: 2 } }));
+      const arena = srv.registry.get(id)!;
+      await waitFor(() => arena.state === 'finished');
+      const res = await request(srv.server).post(`/api/games/${id}/archive`);
+      expect(res.status).toBe(200);
+      expect(res.body.logFiles).toEqual([`${id}.jsonl`]);
+      expect(res.body.debugFiles).toEqual([]);
     } finally {
       await srv.dispose();
     }

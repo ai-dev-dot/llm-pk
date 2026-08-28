@@ -99,8 +99,6 @@ export interface NewGameConfig {
     illegalAttemptsLimit?: number;
     maxTotalMoves?: number;
     maxCostPerGame?: number;
-    /** 本局思考模式(原则 E):'off' 关闭思考 | 'high' 适中思考 | 'max' 最大思考(三选一)。 */
-    thinkingMode?: 'off' | 'high' | 'max';
   };
 }
 
@@ -130,6 +128,8 @@ export interface GameControls {
   step: () => Promise<unknown>;
   /** 超时挂起的手动重试(对局不终止;服务端重新发起该方 LLM 请求)。 */
   retry: (side: Side) => Promise<unknown>;
+  /** 终局存档:服务端把 log 复制到 archive/(随 git 入库)、debug log 复制到 archive_debug/(不入库)。 */
+  archive: () => Promise<{ id: string; logFiles: string[]; debugFiles: string[] }>;
   destroy: () => void;
 }
 
@@ -202,7 +202,6 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     thinking: { red: false, black: false } as Record<Side, boolean>,
     models: { red: undefined as string | undefined, black: undefined as string | undefined },
     first: 'red' as Side, // 先手方(取自 begin.first;旧日志缺省红先)
-    thinkingMode: 'off' as 'off' | 'high' | 'max' | undefined, // 本局思考模式(begin.rules.thinkingMode;历史缺省 off)
     checkSeq: 0,
     checkSide: null as Side | null,
     result: null as ResultInfo | null,
@@ -245,7 +244,6 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
       case 'begin': {
         state.phase = 'running';
         state.first = e.first ?? 'red';
-        state.thinkingMode = e.rules?.thinkingMode ?? 'off';
         state.models.red = e.red?.model;
         state.models.black = e.black?.model;
         refreshThinking();
@@ -445,6 +443,14 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     });
   }
 
+  /** 终局存档:POST /api/games/:id/archive → 服务端把 log 复制到 archive/(入库)、debug log 复制到 archive_debug/(不入库)。 */
+  function archive(): Promise<{ id: string; logFiles: string[]; debugFiles: string[] }> {
+    return fetcher(`/api/games/${gameId}/archive`, { method: 'POST' }).then(async (res) => {
+      if (!res.ok) throw new Error(await readError(res));
+      return res.json();
+    });
+  }
+
   connect();
 
   const controls: GameControls = {
@@ -452,6 +458,7 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     resume: () => postControl('resume'),
     step: () => postControl('step'),
     retry,
+    archive,
     destroy,
   };
   // 直接在 reactive 上挂 controls(不 spread,否则丢失响应性),返回同一代理对象。
@@ -478,7 +485,6 @@ export interface UseGameState {
   thinking: Record<Side, boolean>;
   models: { red: string | undefined; black: string | undefined };
   first: Side;
-  thinkingMode: 'off' | 'high' | 'max' | undefined;
   checkSeq: number;
   checkSide: Side | null;
   result: ResultInfo | null;

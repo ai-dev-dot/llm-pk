@@ -30,7 +30,7 @@ import { appendEvent, readAllEvents } from './game-log';
 import type { DebugLogSink } from './debug-log';
 import { defaultDebugLogDir, metaDebugSink } from './debug-log';
 import { pickNextSeq, slugifySideLabel, yyyymmdd } from './game-id';
-import { scanLogs } from './game-archive';
+import { scanLogs, archiveGameFiles } from './game-archive';
 import { AnthropicPlayer, DEFAULT_TOKENS_PER_M } from './models/anthropic';
 import type { TokensPerM } from './models/anthropic';
 import { OpenAIPlayer } from './models/openai';
@@ -55,6 +55,8 @@ export interface ResolvedSide {
   maxTokens?: number;
   timeoutMs?: number;
   tokensPerM?: TokensPerM;
+  /** 流式(SSE,仅 openai 适配器):长思考防网关空闲掐断(GLM coding 端点约 5 分钟掐非流式长请求)。 */
+  stream?: boolean;
   /** 调试日志写口(内部装配用,不透出任何构造):http.ts 为本方建 `<gid>_<模型>.jsonl` sink。 */
   debugLog?: DebugLogSink;
 }
@@ -80,6 +82,8 @@ export interface ModelProfile {
   /** 超时(分钟):与 `timeout_ms` 同权,优先采用(语义更直观,如 15 = 15 分钟)。 */
   timeout_minutes?: number;
   tokens_per_m?: TokensPerM;
+  /** 流式(SSE,仅 openai 协议):思考增量持续回传,规避网关空闲超时掐断。 */
+  stream?: boolean;
 }
 
 /** 红/黑在 config 里的引用形态:按名引用 profile,或旧格式只给 model。 */
@@ -253,7 +257,9 @@ const defaultBuildPlayer: PlayerFactory = (side, cfg) => {
     thinking: cfg.thinking,
     debugLog: cfg.debugLog,
   };
-  return cfg.protocol === 'openai' ? new OpenAIPlayer(common) : new AnthropicPlayer(common);
+  return cfg.protocol === 'openai'
+    ? new OpenAIPlayer({ ...common, stream: cfg.stream })
+    : new AnthropicPlayer(common);
 };
 
 const DEFAULT_LOG_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'logs');
@@ -405,6 +411,14 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
       g.moveCount = rec.arena.moveCount;
     }
     res.json({ games: list });
+  });
+
+  /* ---------- POST /api/games/:id/archive(终局存档:log → archive/ 入库,debug → archive_debug/ 不入库) ---------- */
+  app.post('/api/games/:id/archive', (req, res) => {
+    const r = mustGame(req.params.id);
+    // 任意状态可存(进行中亦允许:复制是纯读源文件的快照);文件缺失的文件自动跳过。
+    const files = archiveGameFiles(logDir, debugLogDir, r.id);
+    res.json({ id: r.id, ...files });
   });
 
   /* ---------- 控制端点 ---------- */
@@ -593,6 +607,8 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
         timeoutMinMs(d.timeout_minutes),
       tokensPerM:
         obj<TokensPerM>(b.tokensPerM) ?? obj<TokensPerM>(b.tokens_per_m) ?? obj<TokensPerM>(prof?.tokens_per_m) ?? defSide.tokensPerM,
+      // 流式(SSE):请求体单边 > profile;仅 openai 适配器消费。
+      stream: b.stream === true || prof?.stream === true ? true : undefined,
     };
   }
 
