@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cd games/xiangqi
-npm test            # 引擎+服务端单测(358 项,✓)
+npm test            # 引擎+服务端单测(373 项,✓)
 npm test -- engine/notation.test.ts   # 单个测试文件
 npm run test:watch  # 后端口 vitest 监视
 npm run dev         # 后端服务执行(3010,读 config.json,缺配置给提示)
@@ -79,12 +79,13 @@ server/arena.ts(仲裁) ──appendEvent──► logs/*.jsonl ──GET /:id/r
 2. **单代码公证(原则 B)** —— 所有对弈方共用同一份裁判代码、同一个玩家适配器、同一份提示词模板(仅身份词差异);**唯一允许的不对称是各方所选模型不同**;
 3. **上下文隔离(原则 C + 回显)** —— 各方会话互相独立,看不到对方历史、思考、裁判内部状态;**己方思考默认恒回显**(最近 N 步,默认 6),绝不给对方;
 4. **棋手式自由出招(原则 D)** —— 模型只看到局面与规则自行提行动,**不向其提供合法行动清单**;由确定性裁判代码解析+校验;不合规则即打回(解释原因、给予修正机会、绝不枚举正确答案);打回次数=规则掌握度指标;超限判负。
-5. **思考模式三选一(原则 E)** —— 每场 PK 开局必须在该模型端点支持的思考参数中选择其一:**关闭思考 / 启用 high 思考 / 启用 max 思考**(不存在第四选项)。选择结果以**同一边界、同一时刻下发给双方**(绝不出现一方关闭、另一方 max 的不对称);参考建议:flash 级模型选关闭、想验证思考优于关闭但嫌 max 太慢的兼容/中间档模型选 high、各厂主力旗舰选 max。等价参数按端点协议映射(如 Anthropic 协议,对齐 deepseek 官方**双旋钮**——开关 `thinking.type` + 强度 `output_config.effort`:`off` 显式传 `thinking:{type:'disabled'}`(防端点默认开启思考的后门)且不查 effort;`high`|`max` 传 `thinking:{type:'enabled'}` 并配 `output_config:{effort:'high'|'max'}`(与档位同名),两端皆**不附 `budget_tokens`**——部分 Anthropic 兼容端点(如 GLM open.bigmodel.cn)对显式思考预算实现不完整、会静默黑洞,预算交由端点自身默认;同档双方请求体同形,保证公平);兼容端点遵循同一协议形态以保证公平。**落盘**:`begin.rules.thinkingMode` 必须记录本局设定(`'off'|'high'|'max'`,历史日志缺省视为 `off`)。
+5. **思考能力由配置定义(原则 E)** —— 思考开/关与强度**不再由页面或代码映射决定**,统一在 `config.json` 的 `models.<name>.thinking` 定义:**整段透传进请求体顶层**,厂商/模型格式差异都在此声明(如 GLM 原生 `{thinking:{type:'enabled'},reasoning_effort:'max'}`,deepseek 系 `{thinking:{type:'enabled'},output_config:{effort:'max'}}`;GLM-5.3 系官方**强制思考**,`disabled` 会报错)。PK 一律按**各模型最强能力**配置测试,页面不设档位选择。**协议**由 profile `protocol` 声明(`'anthropic'` 缺省兼容端点 / `'openai'` 原生 `/chat/completions` + Bearer,驱动 buildPlayer 选适配器)。**不附 `budget_tokens`**:部分兼容端点对显式思考预算实现不完整、会静默黑洞,预算交端点默认。**落盘**:`begin.rules.thinkingMode` 记录名义档位(`config.rules.thinkingMode`,原则下配置为 'max';历史日志缺省视为 `off`),实际 wire 字段以各 profile `thinking` 为准。
 
 ## 工程注意(实施期沉淀)
 
 - **密钥红线**:`api_key` 只存在于 `config.json`/请求体与模型客户端构造;**绝不**进日志、事件、WS、response;`server/game-log.ts` 的 `sanitizeForLog` 强制执行。服务默认绑 `127.0.0.1`。密钥回落按 **profile 粒度同源校验**:请求未给 key 时,服务端 key 只回落给与最终 `baseUrl` **完全同源**的那份(被引用 profile 或旧顶层 `base_url`);请求体篡改 `baseUrl` 又不给 key → 400,密钥绝不外发。
-- **LLM profiles 配置**:`config.json` 用 `models: { <name>: {base_url, api_key, model, ...} }` 注册表定义任意多个可复用 LLM,`red.use`/`black.use`/`review.use` 按名引用(红黑可打不同厂商/key);请求体内联 `baseUrl/apiKey/model` 优先,表单**全空**则回落 config profile。客户端走 Anthropic Messages 协议(`/v1/messages`),国内用智谱/Kimi 的 Anthropic 兼容端点。**`max_tokens` 默认不传**(请求体省略,交端点默认;仅 profile 显式 `max_tokens` 才带)。旧扁平结构(顶层 `base_url`+`red.model`)仍兼容。解析在 `server/http.ts` 的 `resolveSide`/`resolveReview`/`resolveProfile`。
+- **LLM profiles 配置**:`config.json` 用 `models: { <name>: {base_url, api_key, model, protocol?, thinking?, ...} }` 注册表定义任意多个可复用 LLM,`red.use`/`black.use`/`review.use` 按名引用(红黑可打不同厂商/key)。`protocol`(`'anthropic'` 缺省|`'openai'`)声明端点协议并驱动适配器(`AnthropicPlayer` / `OpenAIPlayer`,后者走原生 `/chat/completions` + Bearer 认证);`thinking` 为思考字段**透传片段**(厂商格式差异在此定义,见原则 E)。请求体内联 `baseUrl/apiKey/model/protocol/thinking` 优先,表单**全空**则回落 config profile。**`max_tokens` 默认不传**(请求体省略,交端点默认;仅 profile 显式 `max_tokens` 才带)。旧扁平结构(顶层 `base_url`+`red.model`)仍兼容。解析在 `server/http.ts` 的 `resolveSide`/`resolveReview`/`resolveProfile`。
+- **模型特有问题档案**:`docs/models/` 记录每个参与 PK 模型的特有问题(症状/复现/根因/社区证据/规避)与最终配置及理由;`config.json` 加 `models.<name>` profile 时**同步建档/更新**(见 `docs/models/00-README.md` 模板);PK 结果文章描述参与模型问题时引用该档案。
 - **分数段与事实**:`begin` 事件保留 `model` 名(评估标识,非密钥)。
 - **M0 spike 待 key**:`npm run spike:parse` 需 `config.json`(`models` profile + 红/黑 `use`,或旧扁平 `baseUrl/apiKey/model`)才跑真实解析率;无 key 时 exit 2。
 - **`finish` reason 码**是稳定字符串(`draw-repeat`/`draw-no-mating-material`/`draw-max-moves`/`draw-cost-limit`/`draw-network`/`illegal-moves`/`timeout`/`internal-error`),前端 `web/src/lib/format.ts` 与之对齐,新增 reason 需两侧同步。**`illegal-moves` = 单半步内打回连续满 `illegalAttemptsLimit`(默认 10)判该方负**(换方重新计数);`draw-network`/`timeout` 为旧语义(网络重试超限→和棋/判负)保留兼容——现网络重试超限不再收尾,改为**超时挂起 + 手动 `retry`**(见上);`internal-error` = 兜底异常。
