@@ -375,6 +375,49 @@ describe('B1 密钥外带向量与 L5 规则参数', () => {
       await srv.dispose();
     }
   });
+
+  it('timeout_minutes(分钟) 生效:请求级 2 分钟 → player.timeoutMs=120000 且 begin.rules.timeoutMs=120000', async () => {
+    const seen: Array<{ side: Side; timeoutMs?: number }> = [];
+    const srv = await startServer(
+      (side, sideCfg) => {
+        seen.push({ side, timeoutMs: sideCfg?.timeoutMs });
+        return scriptPlayer(side, ['a4-a5', 'i7-i6']);
+      },
+      undefined,
+      { red: { model: 'm-cfg' }, black: { model: 'm-cfg' } },
+    );
+    try {
+      const { id } = await createGame(srv.server, baseBody({ config: { timeout_minutes: 2, maxTotalMoves: 2 } }));
+      expect(seen).toHaveLength(2);
+      expect(seen.every((s) => s.timeoutMs === 120000)).toBe(true); // 分钟 → 毫秒换算
+      await waitFor(() => srv.registry.get(id)!.state === 'finished');
+      const begin = srv.store.get(id)!.events.find((e: GameEvent) => e.type === 'begin');
+      expect((begin as { rules?: { timeoutMs?: number } }).rules?.timeoutMs).toBe(120000);
+    } finally {
+      await srv.dispose();
+    }
+  });
+
+  it('顶层 config.json timeout_minutes 参与回落(无请求级时生效)', async () => {
+    const seen: Array<{ timeoutMs?: number }> = [];
+    const srv = await startServer(
+      (_side, sideCfg) => {
+        seen.push({ timeoutMs: sideCfg?.timeoutMs });
+        return scriptPlayer('red', ['a4-a5', 'i7-i6']);
+      },
+      undefined,
+      { timeout_minutes: 15, red: { model: 'm-cfg' }, black: { model: 'm-cfg' } },
+    );
+    try {
+      const { id } = await createGame(srv.server, baseBody({ config: { maxTotalMoves: 2 } })); // 不带请求级超时
+      expect(seen[0]?.timeoutMs).toBe(900000); // 15 分钟
+      await waitFor(() => srv.registry.get(id)!.state === 'finished');
+      const begin = srv.store.get(id)!.events.find((e: GameEvent) => e.type === 'begin');
+      expect((begin as { rules?: { timeoutMs?: number } }).rules?.timeoutMs).toBe(900000);
+    } finally {
+      await srv.dispose();
+    }
+  });
 });
 
 /* ---------- config models 注册表(profiles):多 LLM 定义 + 红黑按名引用 ---------- */
@@ -1205,6 +1248,82 @@ describe('调试交互日志(debug_logs)', () => {
 
       // 全程绝无密钥
       expect(JSON.stringify([...redLines, ...blackLines, ...reviewLines])).not.toContain(SECRET);
+    } finally {
+      vi.unstubAllGlobals();
+      await srv.dispose();
+    }
+  });
+});
+
+/* ---------- 协议分发(protocol: openai → 原生 chat/completions) ---------- */
+
+describe('协议分发(config.models.<name>.protocol)', () => {
+  it('openai profile:走 native /chat/completions + Bearer 认证 + thinking 片段透传;anthropic 缺省不变', async () => {
+    const config: ServerDefaults = {
+      models: {
+        'glm-native': {
+          base_url: 'https://open.bigmodel.cn/api/paas/v4',
+          api_key: 'sk-glm',
+          model: 'glm-5.3-flash',
+          protocol: 'openai',
+          max_tokens: 8192,
+          thinking: { thinking: { type: 'enabled' }, reasoning_effort: 'max' },
+        },
+        'ds-anthropic': {
+          base_url: 'https://api.deepseek.com/anthropic',
+          api_key: 'sk-ds',
+          model: 'deepseek-v4-flash',
+          // 缺省 protocol → anthropic
+        },
+      },
+      red: { use: 'glm-native' },
+      black: { use: 'ds-anthropic' },
+    };
+    const srv = await startServer(undefined, undefined, config);
+    try {
+      const moveArgs = JSON.stringify({ analysis: 'a', move: 'h3-e3' });
+      const fetchMock = vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{ id: 'c', type: 'function', function: { name: 'pick_move', arguments: moveArgs } }],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+            usage: { prompt_tokens: 9, completion_tokens: 4 },
+          }),
+          { status: 200 },
+        ),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { id } = await createGame(srv.server, { config: { maxTotalMoves: 1 } }); // 红走一步即收尾
+      await waitFor(() => srv.store.get(id)?.arena.state === 'finished');
+
+      // 唯一请求来自 openai 红方(黑未行棋)
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { headers: Record<string, string>; body: string }];
+      expect(url).toBe('https://open.bigmodel.cn/api/paas/v4/chat/completions');
+      expect(init.headers['authorization']).toBe('Bearer sk-glm');
+      expect(init.headers).not.toHaveProperty('x-api-key');
+      const reqBody = JSON.parse(init.body);
+      expect(reqBody.max_tokens).toBe(8192);
+      expect(reqBody.thinking).toEqual({ type: 'enabled' });
+      expect(reqBody.reasoning_effort).toBe('max');
+      expect(reqBody.messages[0].role).toBe('system');
+      expect(reqBody.messages[1].content).toContain('当前局面');
+      expect(JSON.stringify(reqBody)).not.toContain('sk-glm'); // 密钥不入请求体/落盘
+
+      // debug log 侧:openai 请求带 protocol 标记(slug:glm-5.3-flash → glm-5-3-flash)
+      const redText = readFileSync(join(srv.debugLogDir, `${id}_glm-5-3-flash.jsonl`), 'utf8');
+      const redLines = redText.split(/\r?\n/).filter((l) => l.trim() !== '').map((l) => JSON.parse(l) as Record<string, unknown>);
+      expect(redLines.length).toBe(2);
+      expect(redLines[0]?.['protocol']).toBe('openai');
     } finally {
       vi.unstubAllGlobals();
       await srv.dispose();

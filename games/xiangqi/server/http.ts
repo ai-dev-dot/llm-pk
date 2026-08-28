@@ -33,6 +33,7 @@ import { pickNextSeq, slugifySideLabel, yyyymmdd } from './game-id';
 import { scanLogs } from './game-archive';
 import { AnthropicPlayer, DEFAULT_TOKENS_PER_M } from './models/anthropic';
 import type { TokensPerM } from './models/anthropic';
+import { OpenAIPlayer } from './models/openai';
 import type { Side } from '../engine/types';
 import { reviewGame, type ReviewClient, type ReviewContext } from './review';
 import { attachWsServer } from './ws';
@@ -46,8 +47,10 @@ export interface ResolvedSide {
   model: string;
   /** 命名用 label:优先 profile 名(`use` 引用),回落模型名(T19 归档友好 id)。 */
   label: string;
-  /** 本局思考模式(原则 E):请求 config.thinkingMode 解析(rules)后随 player 构造下发,双方同额。 */
-  thinkingMode?: 'off' | 'high' | 'max';
+  /** 请求协议(驱动 buildPlayer 选适配器):'anthropic'(缺省)| 'openai'(原生 chat/completions)。 */
+  protocol: 'anthropic' | 'openai';
+  /** 思考字段透传片段(请求体 inline 或 config models.<name>.thinking),整段进请求体顶层。 */
+  thinking?: Record<string, unknown>;
   systemPrompt?: string;
   maxTokens?: number;
   timeoutMs?: number;
@@ -67,9 +70,15 @@ export interface ModelProfile {
   base_url?: string;
   api_key?: string;
   model?: string;
+  /** 请求协议(缺省 'anthropic'):'openai' 走原生 /chat/completions(Bearer 认证,GLM 官方通道)。 */
+  protocol?: 'anthropic' | 'openai';
+  /** 思考字段透传片段:整段展开进请求体顶层(开关+强度+厂商格式差异都在此定义,代码零映射)。 */
+  thinking?: Record<string, unknown>;
   system_prompt?: string;
   max_tokens?: number;
   timeout_ms?: number;
+  /** 超时(分钟):与 `timeout_ms` 同权,优先采用(语义更直观,如 15 = 15 分钟)。 */
+  timeout_minutes?: number;
   tokens_per_m?: TokensPerM;
 }
 
@@ -80,6 +89,7 @@ export interface SideDefaults {
   systemPrompt?: string;
   maxTokens?: number;
   timeoutMs?: number;
+  timeoutMinutes?: number;
   tokensPerM?: TokensPerM;
 }
 
@@ -94,6 +104,7 @@ export interface ServerDefaults {
   steps?: number;
   max_tokens?: number;
   timeout_ms?: number;
+  timeout_minutes?: number;
   red?: SideDefaults;
   black?: SideDefaults;
   rules?: Partial<GameRulesSnapshot>;
@@ -107,6 +118,7 @@ export interface ServerDefaults {
     model?: string;
     max_tokens?: number;
     timeout_ms?: number;
+    timeout_minutes?: number;
     tokens_per_m?: { input?: number; output?: number };
   };
 }
@@ -179,6 +191,11 @@ const nes = (v: unknown): string | undefined => {
   return s ? s : undefined;
 };
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+/** 超时分钟数 → 毫秒(非数字返回 undefined);如 15 → 900000。 */
+const timeoutMinMs = (v: unknown): number | undefined => {
+  const n = num(v);
+  return n === undefined ? undefined : n * 60_000;
+};
 const obj = <T>(v: unknown): T | undefined =>
   v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as T) : undefined;
 
@@ -222,8 +239,9 @@ function fileLogSink(filePath: string): GameLogSink {
   };
 }
 
-const defaultBuildPlayer: PlayerFactory = (side, cfg) =>
-  new AnthropicPlayer({
+/** 按 `cfg.protocol` 分发适配器:openai → 原生 chat/completions(Bearer);缺省 anthropic。 */
+const defaultBuildPlayer: PlayerFactory = (side, cfg) => {
+  const common = {
     side,
     baseUrl: cfg.baseUrl,
     apiKey: cfg.apiKey,
@@ -232,9 +250,11 @@ const defaultBuildPlayer: PlayerFactory = (side, cfg) =>
     maxTokens: cfg.maxTokens,
     timeoutMs: cfg.timeoutMs,
     tokensPerM: cfg.tokensPerM,
-    thinkingMode: cfg.thinkingMode,
+    thinking: cfg.thinking,
     debugLog: cfg.debugLog,
-  });
+  };
+  return cfg.protocol === 'openai' ? new OpenAIPlayer(common) : new AnthropicPlayer(common);
+};
 
 const DEFAULT_LOG_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'logs');
 
@@ -257,13 +277,18 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
   app.post('/api/games', (_req, res) => {
     const body = obj<Record<string, unknown>>(_req.body) ?? {};
     const cfgBody = obj<Record<string, unknown>>(body.config) ?? {};
-    const reqTimeoutMs = num(cfgBody.timeoutMs); // 请求级 config.timeoutMs(与 config.json timeout_ms 同权,请求级优先)
+    // 请求级 config 超时:timeoutMs(毫秒) 与 timeout_minutes/timeoutMinutes(分钟) 同权,请求级优先。
+    const reqTimeoutMs =
+      num(cfgBody.timeoutMs) ?? timeoutMinMs(cfgBody.timeout_minutes) ?? timeoutMinMs(cfgBody.timeoutMinutes);
     const red = resolveSide('red', body.red, dflt, reqTimeoutMs);
     const black = resolveSide('black', body.black, dflt, reqTimeoutMs);
 
     const rules = resolveRules(cfgBody, dflt);
-    // B4:begin.rules.timeoutMs 须反映真实生效值 —— config.json 顶层 timeout_ms 亦参与回落,不再硬报默认 120000。
-    if (rules.timeoutMs === undefined && dflt.timeout_ms !== undefined) rules.timeoutMs = dflt.timeout_ms;
+    // B4:begin.rules.timeoutMs 须反映真实生效值 —— config.json 顶层 timeout_ms / timeout_minutes 亦参与回落。
+    if (rules.timeoutMs === undefined) {
+      const topMs = num(dflt.timeout_ms) ?? timeoutMinMs(dflt.timeout_minutes);
+      if (topMs !== undefined) rules.timeoutMs = topMs;
+    }
     const maxCostPerGame = num(cfgBody.maxCostPerGame) ?? dflt.maxCostPerGame;
     const networkRetryBaseDelayMs = num(cfgBody.networkRetryBaseDelayMs) ?? dflt.networkRetryBaseDelayMs;
 
@@ -276,8 +301,6 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     ).id;
     const logPath = join(logDir, `${gid}.jsonl`);
     const sink = fileLogSink(logPath); // 与 arena 共用同一对象,事后复盘追加在同一 seq 序列上
-    // 原则 E:同一思考模式以同一边界下发给红黑双方。
-    const thinkingMode = rules.thinkingMode;
     // 调试交互日志:每局 × 每个大模型一文件(`<gid>_<模型名>.jsonl`);红黑同名模型时两流
     // append 同一文件、entry 的 side 字段区分;meta 闭包注入 gameId/side/model/label 常量。
     const redDebug = metaDebugSink(join(debugLogDir, `${gid}_${slugifySideLabel(red.model)}.jsonl`), {
@@ -294,8 +317,9 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     });
     const arena = registry.create({
       gameId: gid,
-      red: { player: buildPlayer('red', { ...red, thinkingMode, debugLog: redDebug }), model: red.model, systemPrompt: red.systemPrompt },
-      black: { player: buildPlayer('black', { ...black, thinkingMode, debugLog: blackDebug }), model: black.model, systemPrompt: black.systemPrompt },
+      // resolveSide 已携带 protocol/thinking(config profile 或请求体 inline);buildPlayer 按协议分发。
+      red: { player: buildPlayer('red', { ...red, debugLog: redDebug }), model: red.model, systemPrompt: red.systemPrompt },
+      black: { player: buildPlayer('black', { ...black, debugLog: blackDebug }), model: black.model, systemPrompt: black.systemPrompt },
       sink,
       rules,
       maxCostPerGame,
@@ -545,18 +569,28 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
       apiKey,
       model,
       label: useName ?? model,
+      // 协议:仅认 'openai',其余一律 anthropic(不因未知值报错)。
+      protocol: b.protocol === 'openai' || (prof?.protocol ?? 'anthropic') === 'openai' ? 'openai' : 'anthropic',
+      // 思考字段透传片段:请求体 inline > profile.thinking(厂商格式差异在 config 定义)。
+      thinking: obj<Record<string, unknown>>(b.thinking) ?? prof?.thinking,
       systemPrompt:
         nes(b.systemPrompt) ?? nes(b.system_prompt) ?? nes(prof?.system_prompt) ?? nes(defSide.systemPrompt),
       maxTokens:
         num(b.maxTokens) ?? num(b.max_tokens) ?? num(prof?.max_tokens) ?? num(defSide.maxTokens) ?? num(d.max_tokens),
-      // B4:请求级 config.timeoutMs 与 config.json timeout_ms 同权;请求级优先,单边显式值仍最优先。
+      // B4:超时按「毫秒/分钟」双形态解析(timeout_minutes 语义更直观,与 timeout_ms 同权);
+      // 优先级:请求体单边(ms→min)→ profile(ms→min)→ 单边缺省(ms→min)→ 请求级 config → 顶层(ms→min)。
       timeoutMs:
         num(b.timeoutMs) ??
         num(b.timeout_ms) ??
+        timeoutMinMs(b.timeoutMinutes) ??
+        timeoutMinMs(b.timeout_minutes) ??
         num(prof?.timeout_ms) ??
+        timeoutMinMs(prof?.timeout_minutes) ??
         num(defSide.timeoutMs) ??
+        timeoutMinMs(defSide.timeoutMinutes) ??
         reqTimeoutMs ??
-        num(d.timeout_ms),
+        num(d.timeout_ms) ??
+        timeoutMinMs(d.timeout_minutes),
       tokensPerM:
         obj<TokensPerM>(b.tokensPerM) ?? obj<TokensPerM>(b.tokens_per_m) ?? obj<TokensPerM>(prof?.tokens_per_m) ?? defSide.tokensPerM,
     };
@@ -577,6 +611,11 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     for (const k of keys) {
       const v = num(cfgBody[k]) ?? defRules[k];
       if (v !== undefined) out[k] = v;
+    }
+    // 请求级 config.timeout_minutes/timeoutMinutes(分钟) → 毫秒,兜底于毫秒形态。
+    if (out.timeoutMs === undefined) {
+      const minV = timeoutMinMs(cfgBody.timeout_minutes) ?? timeoutMinMs(cfgBody.timeoutMinutes);
+      if (minV !== undefined) out.timeoutMs = minV;
     }
     if (out.maxTotalMoves === undefined && d.steps !== undefined) out.maxTotalMoves = d.steps;
     // 原则 E:思考模式枚举归一(非 off/high/max → 缺省,arena 回落 off 并落盘)。
@@ -634,7 +673,15 @@ function resolveReview(raw: unknown, d: ServerDefaults): ResolvedReview | undefi
     apiKey,
     model,
     maxTokens: num(b?.maxTokens) ?? num(b?.max_tokens) ?? num(prof?.max_tokens) ?? num(def.max_tokens),
-    timeoutMs: num(b?.timeoutMs) ?? num(b?.timeout_ms) ?? num(prof?.timeout_ms) ?? num(def.timeout_ms),
+    timeoutMs:
+      num(b?.timeoutMs) ??
+      num(b?.timeout_ms) ??
+      timeoutMinMs(b?.timeoutMinutes) ??
+      timeoutMinMs(b?.timeout_minutes) ??
+      num(prof?.timeout_ms) ??
+      timeoutMinMs(prof?.timeout_minutes) ??
+      num(def.timeout_ms) ??
+      timeoutMinMs(def.timeout_minutes),
     tokensPerM: resolveTokensPerM(
       obj(b?.tokensPerM) ?? obj(b?.tokens_per_m),
       prof?.tokens_per_m ?? def.tokens_per_m,

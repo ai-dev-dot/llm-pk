@@ -393,6 +393,7 @@ describe('Arena 网络重试', () => {
     const tos = events.filter((e): e is TimeoutEvent => e.type === 'timeout');
     expect(tos).toHaveLength(1);
     expect(tos[0]!.side).toBe('red');
+    expect(tos[0]!.cause).toBe('network-exhausted'); // 真实断连重试超限 → network-exhausted
     const retries = events.filter((e): e is RetryEvent => e.type === 'retry');
     expect(retries.map((e) => e.attempt)).toEqual([1, 2, 3]); // 自动退避 3 次用尽
     expect(arena.state).toBe('running');
@@ -406,6 +407,39 @@ describe('Arena 网络重试', () => {
     expect(lastFinish(events)!.reason).toBe('draw-max-moves');
     expect(callsRed).toBe(5);
     expect(arena.stuckSide).toBeUndefined();
+  });
+
+  it('单步请求跑满超时(request-timeout)→ 挂起 cause=request-timeout,与网络断连区分', async () => {
+    let callsRed = 0;
+    const arena = baseArena('g10', {
+      rules: { maxTotalMoves: 2 },
+      networkRetryBaseDelayMs: 0,
+      red: {
+        player: {
+          side: 'red',
+          async pickMove() {
+            callsRed++;
+            if (callsRed <= 4) throw new NetworkError('api timeout(>900000ms)', true, 'request-timeout');
+            return { analysis: 'x', move: 'a4-a5' };
+          },
+        },
+      },
+      black: { player: scriptPlayer('black', ['i7-i6']) },
+    });
+    const events = collect(arena);
+
+    const startP = arena.start();
+    await waitUntil(() => arena.stuckSide === 'red');
+
+    const tos = events.filter((e): e is TimeoutEvent => e.type === 'timeout');
+    expect(tos).toHaveLength(1);
+    expect(tos[0]!.side).toBe('red');
+    expect(tos[0]!.cause).toBe('request-timeout'); // api-timeout → request-timeout
+
+    expect(arena.retrySide('red')).toBe(true);
+    await startP;
+    expect(arena.state).toBe('finished');
+    expect(callsRed).toBe(5);
   });
 
   it('pause 中止飞行请求(PlayerCancelled)→ 不判负;resume 后回合从零重走', async () => {

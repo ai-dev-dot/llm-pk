@@ -64,17 +64,13 @@ export interface AnthropicPlayerConfig {
    */
   maxTokens?: number;
   /**
-   * 思考模式(原则 E),对齐 deepseek 官方双旋钮:
-   * - 开关 `thinking.type`:`off` 显式传 `{type:'disabled'}`(防端点默认开启思考的后门);
-   *   `high` | `max` 传 `{type:'enabled'}`。
-   * - 强度 `output_config.effort`:`high` | `max` 下发与档位同名的值(`'high'` | `'max'`,
-   *   对齐 deepseek 官方语义);`off` 不查 effort。
-   * - **不附 budget_tokens**:部分 Anthropic 兼容端点(如 GLM open.bigmodel.cn)对显式思考
-   *   预算实现不完整、会静默黑洞,预算交由端点自身默认。
-   * 档位名(off/high/max)记录于 begin.rules.thinkingMode 供观测与对比。缺省 'off'。
-   * 本设定始终显式下发,绝不依赖端点缺省。
+   * 思考相关字段**透传片段**(config `models.<name>.thinking`,原则 E 新版):
+   * 整段展开进请求体顶层,厂商/模型各自的格式差异就在 config 里定义,代码不做模式→字段映射。
+   * 例(deepseek 系):`{ thinking:{type:'enabled'}, output_config:{effort:'max'} }`;
+   * 例(GLM 原生):`{ thinking:{type:'enabled'}, reasoning_effort:'max' }`。
+   * 缺省不发任何 thinking 字段(交端点自身默认)。档位名义记录于 begin.rules.thinkingMode。
    */
-  thinkingMode?: 'off' | 'high' | 'max';
+  thinking?: Record<string, unknown>;
   /** 每百万 token 单价(USD),默认 `DEFAULT_TOKENS_PER_M`。 */
   tokensPerM?: TokensPerM;
   /**
@@ -105,11 +101,11 @@ const MOVE_TOOL = {
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** max_tokens 截断后带提示重发的文案(G3c):告知模型因超长被截断,请精简并直接给 move。 */
-const TRUNCATED_HINT =
+export const TRUNCATED_HINT =
   '注意:你上一次回复没有完成工具调用(未产出 pick_move)。请务必仍然调用 pick_move 工具提交 move(中文记谱或坐标);不要只输出普通文字、不要提前结束。若上一条是因输出超长被截断,请把 analysis 精简到一两句、先给 move 再略述。';
 
 /** 无工具响应(max_tokens 截断 / end_turn 弃用)最多带提示重发的次数(含首次共 1+MAX 次请求)。 */
-const MAX_TRUNCATE_RETRY = 2;
+export const MAX_TRUNCATE_RETRY = 2;
 
 /**
  * 组装 user 消息(原则 C/D):棋盘 + 公共历史(+中文记谱旁注)+ 己方自省 + 打回讲评。
@@ -194,7 +190,7 @@ export class AnthropicPlayer implements Player {
   private readonly maxTokens?: number;
   private readonly tokensPerM: TokensPerM;
   private readonly systemPrompt?: string;
-  private readonly thinkingMode: 'off' | 'high' | 'max';
+  private readonly thinking?: Record<string, unknown>;
   private readonly stream: boolean;
   private readonly debugLog?: DebugLogSink;
   /** 构造契约占位(透传 arena),player 层不自行重试。 */
@@ -214,7 +210,7 @@ export class AnthropicPlayer implements Player {
     this.tokensPerM = cfg.tokensPerM ?? DEFAULT_TOKENS_PER_M;
     this.networkRetryBaseDelayMs = cfg.networkRetryBaseDelayMs;
     this.systemPrompt = cfg.systemPrompt;
-    this.thinkingMode = cfg.thinkingMode ?? 'off';
+    this.thinking = cfg.thinking;
     // G3:默认非流式(JSON 一次性返回)。GLM 等 Anthropic 兼容端点对「流式 + thinking」实现不完整
     // (黑洞/狂流/max_tokens 不生效);非流式路径遵守总输出上限。需实时思考展示时显式 stream:true。
     this.stream = cfg.stream ?? false;
@@ -272,12 +268,8 @@ export class AnthropicPlayer implements Player {
     onThought?: (chunk: string) => void,
     attempt = 0,
   ): Promise<ParsedBody> {
-    // 思考模式(原则 E),对齐 deepseek 官方双旋钮:off → 开关 disabled(防端点默认开后门);
-    // high/max → 开关 enabled + 强度 effort('high'|'max');off 不查 effort。
-    // 不附 budget_tokens:显式思考预算在部分兼容端点(如 GLM)静默黑洞,预算交端点默认。
-    const thinking: Record<string, unknown> =
-      this.thinkingMode === 'off' ? { type: 'disabled' } : { type: 'enabled' };
-    const thinkingEffort = this.thinkingMode === 'max' ? 'max' : this.thinkingMode === 'high' ? 'high' : undefined;
+    // 思考字段:config `models.<name>.thinking` 透传片段整段展开进请求体顶层(厂商格式差异在配置
+    // 定义,代码不做模式→字段映射;缺省不发,交端点默认)。不附 budget_tokens(兼容端点黑洞)。
     const body = {
       model: this.model,
       // max_tokens 默认省略:交给端点自身的输出上限(适配长思考);显式配置才带上。
@@ -286,8 +278,7 @@ export class AnthropicPlayer implements Player {
       messages: [{ role: 'user', content: user }],
       tools: [MOVE_TOOL],
       tool_choice: { type: 'tool', name: MOVE_TOOL_NAME },
-      thinking,
-      ...(thinkingEffort ? { output_config: { effort: thinkingEffort } } : {}),
+      ...(this.thinking ?? {}),
       ...(this.stream ? { stream: true } : {}),
     };
 
@@ -321,7 +312,7 @@ export class AnthropicPlayer implements Player {
         // 被外部 pause 中止(cancelPending)→ 暂停信号,不算超时、不算失败
         if (this.cancelled) throw new PlayerCancelled('回合被暂停中止');
         this.writePlayerError(attempt, 'api-timeout', `api timeout(>${this.timeoutMs}ms)`, true);
-        throw new NetworkError(`api timeout(>${this.timeoutMs}ms)`, true);
+        throw new NetworkError(`api timeout(>${this.timeoutMs}ms)`, true, 'request-timeout');
       }
       this.writePlayerError(
         attempt,
@@ -382,7 +373,7 @@ export class AnthropicPlayer implements Player {
       if (err instanceof Error && err.name === 'AbortError') {
         if (this.cancelled) throw new PlayerCancelled('回合被暂停中止');
         this.writePlayerError(attempt, 'api-timeout', `api timeout(>${this.timeoutMs}ms)`, true);
-        throw new NetworkError(`api timeout(>${this.timeoutMs}ms)`, true);
+        throw new NetworkError(`api timeout(>${this.timeoutMs}ms)`, true, 'request-timeout');
       }
       this.writePlayerError(
         attempt,

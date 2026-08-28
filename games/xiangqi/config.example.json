@@ -1,9 +1,19 @@
 {
   "models": {
-    "glm46": {
-      "base_url": "https://open.bigmodel.cn/api/anthropic",
-      "api_key": "在此填入你的智谱 API Key",
-      "model": "glm-4.6"
+    "GLM-5.3-Flash": {
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "api_key": "在此填入你的 Coding Plan API Key",
+      "model": "GLM-5.3-Flash",
+      "protocol": "openai",
+      "thinking": { "thinking": { "type": "enabled" }, "reasoning_effort": "high" },
+      "max_tokens": 16384
+    },
+    "deepseek-v4-flash": {
+      "base_url": "https://ark.cn-beijing.volces.com/api/coding",
+      "api_key": "在此填入你的 API Key",
+      "model": "deepseek-v4-flash",
+      "protocol": "anthropic",
+      "thinking": { "thinking": { "type": "enabled" }, "output_config": { "effort": "max" } }
     },
     "kimi": {
       "base_url": "https://api.moonshot.cn/anthropic",
@@ -11,9 +21,10 @@
       "model": "kimi-k2-0905-preview"
     }
   },
-  "red": { "use": "glm46" },
-  "black": { "use": "kimi" },
-  "review": { "use": "glm46" },
+  "red": { "use": "GLM-5.3-Flash" },
+  "black": { "use": "deepseek-v4-flash" },
+  "review": { "use": "deepseek-v4-flash" },
+  "rules": { "thinkingMode": "max" },
   "steps": 100,
-  "timeout_ms": 300000
+  "timeout_minutes": 15
 }

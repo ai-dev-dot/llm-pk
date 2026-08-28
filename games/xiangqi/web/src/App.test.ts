@@ -56,10 +56,11 @@ describe('App 全流程冒烟', () => {
         const method = init?.method ?? 'GET';
         if (u === '/api/logs') return new Response(JSON.stringify({ games: [] }), { status: 200 });
         if (u === '/api/games' && method === 'POST') {
-          // 断言请求体为空配置 + 思考模式(红/黑不落屏,服务端回落 config.json)
+          // 断言请求体为空配置、不携带思考档位(红/黑不落屏,服务端回落 config.json;
+          // 思考由 config.models.<name>.thinking 定义,页面不再下发)
           const posted = JSON.parse(String(init?.body));
           expect(posted.red.model).toBe('');
-          expect(posted.config?.thinkingMode).toBe('off'); // 重开默认关闭思考
+          expect(posted.config?.thinkingMode).toBeUndefined();
           return new Response(JSON.stringify({ id: 'g-smoke' }), { status: 201 });
         }
         if (u.endsWith('/replay')) return new Response(JSON.stringify({ id: 'g-smoke', events: [] }), { status: 200 });

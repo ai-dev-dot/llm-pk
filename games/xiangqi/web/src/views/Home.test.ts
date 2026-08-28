@@ -87,7 +87,7 @@ describe('Home 列表渲染', () => {
 });
 
 describe('Home 导航行为', () => {
-  it('「开始对局」POST 空配置(带思考模式)→ toGame 新 id;切换 max 后再次开局', async () => {
+  it('「开始对局」POST 空配置(不再带思考档位)→ toGame 新 id;连续开局两次', async () => {
     const seen: string[] = [];
     vi.stubGlobal(
       'fetch',
@@ -96,7 +96,7 @@ describe('Home 导航行为', () => {
         if (u === '/api/logs') return new Response(JSON.stringify({ games: [] }), { status: 200 });
         if (u === '/api/games') {
           const body = JSON.parse(String(init?.body));
-          seen.push(`${body.red.model}|${body.black.model}|${body.config?.thinkingMode}`);
+          seen.push(`${body.red.model}|${body.black.model}|${JSON.stringify(body.config)}`);
           return new Response(JSON.stringify({ id: 'g-new' }), { status: 201 });
         }
         throw new Error('unexpected: ' + u);
@@ -105,28 +105,21 @@ describe('Home 导航行为', () => {
     const w = mount(Home);
     await flushPromises();
 
-    // 思考模式选择器默认关闭(x);红/黑均留空 → 服务端回落 config.json
-    expect(w.get('[data-testid="mode-off"]').classes()).toContain('on');
+    // 原则 E(新版):页面无思考模式选择器;仅显示配置说明。红/黑留空 → 服务端回落 config.json。
+    expect(w.find('[data-testid="mode-off"]').exists()).toBe(false);
+    expect(w.find('[data-testid="thinking-note"]').exists()).toBe(true);
+    expect(w.get('[data-testid="start-game"]').text()).toContain('开始对局');
+
     await w.get('[data-testid="start-game"]').trigger('click');
     await flushPromises();
     expect(w.emitted('toGame')?.[0]).toEqual(['g-new']);
-    expect(seen).toEqual(['||off']);
+    // 请求体不带 thinkingMode(config 为空对象,档位由服务端 config.models.<name>.thinking 决定)
+    expect(seen).toEqual(['||{}']);
 
-    // 切到 max 再开一局 → 请求体带 config.thinkingMode=max(原则 E 三选一)
-    await w.get('[data-testid="mode-max"]').trigger('click');
-    expect(w.get('[data-testid="mode-max"]').classes()).toContain('on');
-    expect(w.get('[data-testid="mode-off"]').classes()).not.toContain('on');
+    // 再开一局:仍不带思考档位
     await w.get('[data-testid="start-game"]').trigger('click');
     await flushPromises();
-    expect(seen).toEqual(['||off', '||max']);
-
-    // high 档(mode-high 排在 max 之前):切到 high 再开一局
-    await w.get('[data-testid="mode-high"]').trigger('click');
-    expect(w.get('[data-testid="mode-high"]').classes()).toContain('on');
-    expect(w.get('[data-testid="mode-max"]').classes()).not.toContain('on');
-    await w.get('[data-testid="start-game"]').trigger('click');
-    await flushPromises();
-    expect(seen).toEqual(['||off', '||max', '||high']);
+    expect(seen).toEqual(['||{}', '||{}']);
     w.unmount();
   });
 

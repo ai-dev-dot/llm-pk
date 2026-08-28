@@ -194,6 +194,8 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     thoughtSettled: { red: false, black: false } as Record<Side, boolean>,
     /** 超时挂起方(timeout 事件;等待手动「重试」恢复);null = 未挂起。 */
     stuckSide: null as Side | null,
+    /** 挂起成因(request-timeout=单请求跑满超时;network-exhausted=网络断连重试超限);旧日志缺省 null。 */
+    stuckCause: null as 'request-timeout' | 'network-exhausted' | null,
     phase: 'connecting' as GamePhase,
     wsStatus: 'connecting' as WsStatus,
     turn: 'red' as Side,
@@ -270,7 +272,10 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
         if (e.usage) addUsage(e.turn, e.usage, e.elapsedMs);
         if (e.analysis) state.liveThoughts[e.turn] = e.analysis;
         state.thoughtSettled[e.turn] = true; // 该方本半回合已落定(liveThoughts 为最终版,供历史/观感)
-        if (state.stuckSide === e.turn) state.stuckSide = null; // 超时方成功出谱即恢复
+        if (state.stuckSide === e.turn) {
+          state.stuckSide = null; // 超时方成功出谱即恢复
+          state.stuckCause = null;
+        }
         state.turn = e.turn === 'red' ? 'black' : 'red';
         refreshThinking();
         break;
@@ -292,7 +297,8 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
         break;
       }
       case 'timeout': {
-        state.stuckSide = e.side; // 该方网络重试超限,对局不终止,等待手动重试
+        state.stuckSide = e.side; // 该方网络重试超限(或单步超时),对局不终止,等待手动重试
+        state.stuckCause = e.cause;
         break;
       }
       case 'check': {
@@ -434,6 +440,7 @@ export function useGame(gameId: string, opts: UseGameOptions = {}): UseGameState
     }).then(async (res) => {
       if (!res.ok) throw new Error(await readError(res));
       state.stuckSide = null;
+      state.stuckCause = null;
       return res.json();
     });
   }
@@ -464,6 +471,7 @@ export interface UseGameState {
   liveThoughts: Record<Side, string>;
   thoughtSettled: Record<Side, boolean>;
   stuckSide: Side | null;
+  stuckCause: 'request-timeout' | 'network-exhausted' | null;
   phase: GamePhase;
   wsStatus: WsStatus;
   turn: Side;

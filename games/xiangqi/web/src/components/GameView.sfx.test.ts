@@ -170,11 +170,12 @@ describe('GameView 音效接线 B5', () => {
     const w = mount(GameView, { props: { gameId: 'g-sfx' } });
     const ws = wsInstances[0]!;
     ws.onmessage!({ data: frame(1, beginEv()) });
-    ws.onmessage!({ data: frame(2, { seq: 2, ts: 't', type: 'timeout', side: 'red' }) });
+    ws.onmessage!({ data: frame(2, { seq: 2, ts: 't', type: 'timeout', side: 'red', cause: 'network-exhausted' }) });
     await flushPromises();
 
     expect(w.find('[data-testid="stuck-red"]').exists()).toBe(true);
-    expect(w.get('[data-testid="stuck-red"]').text()).toContain('已超时');
+    expect(w.get('[data-testid="stuck-red"]').text()).toContain('网络断连');
+    expect(w.get('[data-testid="stuck-red"]').text()).toContain('重试');
     expect(w.find('[data-testid="stuck-black"]').exists()).toBe(false);
 
     await w.get('[data-testid="retry-red"]').trigger('click');

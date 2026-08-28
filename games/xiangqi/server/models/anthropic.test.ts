@@ -492,43 +492,56 @@ describe('AnthropicPlayer SSE 流式(G3)', () => {
   });
 });
 
-/* ---------- 思考模式(原则 E)显式下发 ---------- */
+/* ---------- 思考字段透传(原则 E 新版:config 管理,代码零映射) ---------- */
 
-describe('思考模式(原则 E)', () => {
-  it('off:请求体显式 thinking.type=disabled 且不查 effort', async () => {
-    const fn = stubFetch(toolUseResponse());
-    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', thinkingMode: 'off' });
-    await p.pickMove(fakeCtx);
-    const b = requestOf(fn).body;
-    expect(b.thinking).toEqual({ type: 'disabled' });
-    expect(b.output_config).toBeUndefined();
-  });
-
-  it('缺省 thinkingMode → off(显式 disabled,绝不依赖端点缺省)', async () => {
+describe('思考字段透传(thinking 片段)', () => {
+  it('thinking 缺省:请求体不含任何思考相关字段(交端点默认)', async () => {
     const fn = stubFetch(toolUseResponse());
     const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm' });
     await p.pickMove(fakeCtx);
     const b = requestOf(fn).body;
-    expect(b.thinking).toEqual({ type: 'disabled' });
+    expect(b.thinking).toBeUndefined();
     expect(b.output_config).toBeUndefined();
+    expect(b.reasoning_effort).toBeUndefined();
   });
 
-  it('max:thinking.type=enabled 且 output_config.effort=max(对齐 deepseek 官方强度)', async () => {
+  it('GLM 原生形态片段整段透传:{thinking:{enabled}, reasoning_effort:max}(厂商格式由配置决定)', async () => {
     const fn = stubFetch(toolUseResponse());
-    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', thinkingMode: 'max' });
+    const p = new AnthropicPlayer({
+      side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm',
+      thinking: { thinking: { type: 'enabled' }, reasoning_effort: 'max' },
+    });
+    await p.pickMove(fakeCtx);
+    const b = requestOf(fn).body;
+    expect(b.thinking).toEqual({ type: 'enabled' });
+    expect(b.reasoning_effort).toBe('max');
+    expect(b.output_config).toBeUndefined(); // 不混入 deepseek 系字段
+  });
+
+  it('deepseek 系形态片段整段透传:{thinking:{enabled}, output_config:{effort:max}}', async () => {
+    const fn = stubFetch(toolUseResponse());
+    const p = new AnthropicPlayer({
+      side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm',
+      thinking: { thinking: { type: 'enabled' }, output_config: { effort: 'max' } },
+    });
     await p.pickMove(fakeCtx);
     const b = requestOf(fn).body;
     expect(b.thinking).toEqual({ type: 'enabled' });
     expect(b.output_config).toEqual({ effort: 'max' });
+    expect(b.reasoning_effort).toBeUndefined();
   });
 
-  it('high:thinking.type=enabled 且 output_config.effort=high(对齐 deepseek 官方强度)', async () => {
+  it('off 形态:{thinking:{disabled}} 透传,不带任何强度键', async () => {
     const fn = stubFetch(toolUseResponse());
-    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', thinkingMode: 'high' });
+    const p = new AnthropicPlayer({
+      side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm',
+      thinking: { thinking: { type: 'disabled' } },
+    });
     await p.pickMove(fakeCtx);
     const b = requestOf(fn).body;
-    expect(b.thinking).toEqual({ type: 'enabled' });
-    expect(b.output_config).toEqual({ effort: 'high' });
+    expect(b.thinking).toEqual({ type: 'disabled' });
+    expect(b.output_config).toBeUndefined();
+    expect(b.reasoning_effort).toBeUndefined();
   });
 });
 

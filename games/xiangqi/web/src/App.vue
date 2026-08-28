@@ -44,10 +44,11 @@ if (typeof window !== 'undefined') {
 }
 
 // 「开始对局」与「重开」:均以空配置 POST → 后端回落 config.json 的 red/black use。
+// 思考档位不再由页面下发——config.json 的 models.<name>.thinking 已定义(原则 E 新版)。
 const EMPTY_CONFIG: NewGameConfig = {
   red: { baseUrl: '', apiKey: '', model: '' },
   black: { baseUrl: '', apiKey: '', model: '' },
-  config: { thinkingMode: 'off' }, // 观战页「重开」默认关闭思考;需 high/max 请回首页再选
+  config: {},
 };
 const creating = ref(false);
 async function createAndGo(order: 'new' | 'restart'): Promise<void> {

@@ -63,7 +63,12 @@ export interface MoveContext {
 
 /** 网络型错误:Player 应抛出以触发 arena 指数退避重试(超时/5xx/断网)。 */
 export class NetworkError extends Error {
-  constructor(message: string, readonly retryable = true) {
+  constructor(
+    message: string,
+    readonly retryable = true,
+    /** 成因:request-timeout=单请求跑满 timeoutMs;network=真实断连/5xx/429。挂起时据此出 cause。 */
+    readonly kind: 'request-timeout' | 'network' = 'network',
+  ) {
     super(message);
     this.name = 'NetworkError';
   }
@@ -445,9 +450,16 @@ export class Arena<S = Board, M = Move> {
         if (err instanceof PlayerCancelled) throw err; // 暂停中止:不重试、不判负
         if (!isNetworkError(err)) throw err;
         if (attempt >= retries) {
-          // 超时挂起:不收获尾,挂起等手动重试
+          // 超时挂起:不收获尾,挂起等手动重试(cause 区分「单请求跑满超时」与「网络断连重试超限」)
           this.stuckSide_ = side;
-          this.emit({ type: 'timeout', side });
+          this.emit({
+            type: 'timeout',
+            side,
+            cause:
+              err instanceof NetworkError && err.kind === 'request-timeout'
+                ? 'request-timeout'
+                : 'network-exhausted',
+          });
           while (this.stuckSide_ === side && !this.finishRequested_) await this.waitKick();
           if (this.finishRequested_ || this.aborted) return { analysis: '', move: '' };
           this.stuckSide_ = undefined;

@@ -356,14 +356,26 @@ describe('useGame 断线续传', () => {
 /* ---------- 超时挂起 / 手动重试 / 当前思考清理 ---------- */
 
 describe('useGame 超时挂起 / 重试 / 当前思考清理', () => {
-  it('timeout 事件 → stuckSide=该方;该方成功出谱(move) → stuckSide 清空', () => {
+  it('timeout 事件 → stuckSide+stuckCause=该方;该方成功出谱(move) → 双双清空', () => {
     const { factory, sockets } = makeFactory();
     const g = useGame('g1', { wsFactory: factory });
     sockets[0]!.onmessage({ data: frame(1, beginEv()) });
-    sockets[0]!.onmessage({ data: frame(2, { seq: 2, ts: 't', type: 'timeout', side: 'red' }) });
+    sockets[0]!.onmessage({ data: frame(2, { seq: 2, ts: 't', type: 'timeout', side: 'red', cause: 'network-exhausted' }) });
     expect(g.stuckSide).toBe('red');
+    expect(g.stuckCause).toBe('network-exhausted');
     sockets[0]!.onmessage({ data: frame(3, moveEv({ seq: 3, turn: 'red', move: { from: 'h3', to: 'e3' } })) });
     expect(g.stuckSide).toBeNull();
+    expect(g.stuckCause).toBeNull();
+    g.controls.destroy();
+  });
+
+  it('timeout 事件 cause=request-timeout → stuckCause 如实记录', () => {
+    const { factory, sockets } = makeFactory();
+    const g = useGame('g1', { wsFactory: factory });
+    sockets[0]!.onmessage({ data: frame(1, beginEv()) });
+    sockets[0]!.onmessage({ data: frame(2, { seq: 2, ts: 't', type: 'timeout', side: 'black', cause: 'request-timeout' }) });
+    expect(g.stuckSide).toBe('black');
+    expect(g.stuckCause).toBe('request-timeout');
     g.controls.destroy();
   });
 
@@ -377,11 +389,13 @@ describe('useGame 超时挂起 / 重试 / 当前思考清理', () => {
     });
     const g = useGame('g1', { wsFactory: factory, fetcher: fetcher as unknown as typeof fetch });
     sockets[0]!.onmessage({ data: frame(1, beginEv()) });
-    sockets[0]!.onmessage({ data: frame(2, { seq: 2, ts: 't', type: 'timeout', side: 'black' }) });
+    sockets[0]!.onmessage({ data: frame(2, { seq: 2, ts: 't', type: 'timeout', side: 'black', cause: 'network-exhausted' }) });
     expect(g.stuckSide).toBe('black');
+    expect(g.stuckCause).toBe('network-exhausted');
     await g.controls.retry('black');
     expect(calls).toEqual(['/api/games/g1/retry:{"side":"black"}']);
     expect(g.stuckSide).toBeNull();
+    expect(g.stuckCause).toBeNull();
     g.controls.destroy();
   });
 

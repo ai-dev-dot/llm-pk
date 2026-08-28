@@ -27,15 +27,8 @@ const emit = defineEmits<{
   (e: 'toReplay', id: string): void;
 }>();
 
-// 思考模式(原则 E):每场 PK 必须三选一 —— 关闭思考 / high 思考 / max 思考。
-// 参考建议:flash 级模型选「关闭」;想验证思考但嫌 max 太慢的选「high」;各厂主力旗舰选「max」。
-const thinkingMode = ref<'off' | 'high' | 'max'>('off');
-const modeChoices = [
-  { value: 'off', title: '关闭思考', desc: 'flash 级模型建议' },
-  { value: 'high', title: '启用 high 思考', desc: '适中深度 · 比 max 快' },
-  { value: 'max', title: '启用 max 思考', desc: '各厂主力旗舰建议' },
-] as const;
-
+// 原则 E(新版):思考开/关与强度由服务端 config.json 按模型 profile 定义(见 models.<name>.thinking),
+// PK 一律按各模型最强能力测试;页面不再选择档位。
 const games = ref<GameListItem[]>([]);
 const error = ref<string | null>(null);
 const creating = ref(false);
@@ -70,8 +63,7 @@ async function start(): Promise<void> {
   const cfg: NewGameConfig = {
     red: { baseUrl: '', apiKey: '', model: '' },
     black: { baseUrl: '', apiKey: '', model: '' },
-    // 原则 E:本局思考模式随开局请求下发双方(same boundary)。
-    config: { thinkingMode: thinkingMode.value },
+    config: {}, // 思考档位不再由页面下发——config.json 的 models.<name>.thinking 已定义
   };
   try {
     const { id } = await createGame(cfg);
@@ -114,25 +106,10 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <fieldset class="mode-picker" data-testid="thinking-mode">
-      <legend class="mode-label">思考模式</legend>
-      <button
-        v-for="c in modeChoices"
-        :key="c.value"
-        type="button"
-        class="mode-opt"
-        :class="{ on: thinkingMode === c.value }"
-        :data-testid="`mode-${c.value}`"
-        @click="thinkingMode = c.value"
-      >
-        <span class="mode-dot"></span>
-        <span class="mode-txt">
-          <b>{{ c.title }}</b>
-          <i>{{ c.desc }}</i>
-        </span>
-      </button>
-      <span class="mode-hint">每局必须三选一;选择结果以同一边界同时下发双方。</span>
-    </fieldset>
+    <p class="mode-note" data-testid="thinking-note">
+      思考模式由服务端 <code>config.json</code> 的 <code>models.&lt;模型&gt;.thinking</code> 定义
+      —— PK 一律按各模型最强能力测试。
+    </p>
 
     <div class="toolbar">
       <button class="btn pri" :disabled="creating" data-testid="start-game" @click="start">
@@ -250,71 +227,18 @@ onBeforeUnmount(() => {
   font-size: 11px;
   color: var(--amber);
 }
-.mode-picker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 8px 12px;
-  margin-bottom: 10px;
-  flex-wrap: wrap;
-}
-.mode-label {
+.mode-note {
   font-size: 12px;
   color: var(--ink-soft);
-  letter-spacing: 0.08em;
-  padding-right: 6px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
 }
-.mode-opt {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  border: 1px solid var(--line);
-  background: var(--panel-2);
-  color: var(--ink-soft);
-  border-radius: 9px;
-  padding: 6px 12px;
-  cursor: pointer;
-}
-.mode-opt .mode-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1px solid var(--ink-dim);
-}
-.mode-opt .mode-txt {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  line-height: 1.3;
-}
-.mode-opt .mode-txt b {
-  font-size: 13px;
-  color: var(--ink);
-  font-weight: 600;
-}
-.mode-opt .mode-txt i {
-  font-style: normal;
+.mode-note code {
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--ink-dim);
-}
-.mode-opt.on {
-  border-color: var(--amber);
-  background: rgba(219, 155, 59, 0.12);
-}
-.mode-opt.on .mode-dot {
-  background: var(--amber);
-  border-color: var(--amber);
-  box-shadow: 0 0 6px var(--amber);
-}
-.mode-opt.on .mode-txt b {
   color: var(--amber);
-}
-.mode-hint {
-  font-size: 11px;
-  color: var(--ink-dim);
 }
 .toolbar {
   display: flex;

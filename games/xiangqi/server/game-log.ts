@@ -110,6 +110,8 @@ export interface RetryEvent extends BaseEvent {
 export interface TimeoutEvent extends BaseEvent {
   type: 'timeout';
   side: Side;
+  /** 挂起成因:request-timeout=单步请求跑满 timeoutMs;network-exhausted=网络断连重试超限。 */
+  cause: 'request-timeout' | 'network-exhausted';
 }
 
 export interface ErrorEvent extends BaseEvent {

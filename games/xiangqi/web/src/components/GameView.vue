@@ -133,6 +133,17 @@ watch(
 
 /* ---------- 超时挂起的手动重试(重试超限不对局终止,对应方显示「已超时 + 重试」) ---------- */
 const retrying = ref<Side | null>(null);
+/** 挂起文案按成因区分:request-timeout=单步超时;network-exhausted=网络断连重试超限;null=旧日志缺省。 */
+function stuckTitle(cause: 'request-timeout' | 'network-exhausted' | null): string {
+  return cause === 'request-timeout' ? '单步超时' : cause === 'network-exhausted' ? '网络断连' : '已超时';
+}
+function stuckSub(cause: 'request-timeout' | 'network-exhausted' | null): string {
+  return cause === 'request-timeout'
+    ? '超过 15 分钟未响应,可重试'
+    : cause === 'network-exhausted'
+      ? '重试多次仍断连,可重试'
+      : '等待重试';
+}
 function onRetry(side: Side): void {
   if (retrying.value) return;
   retrying.value = side;
@@ -357,7 +368,8 @@ function moveLine(m: MoveRecord): string {
           data-testid="stuck-black"
         >
           <span class="sb-ico">⏱</span>
-          <b>已超时</b>
+          <b>{{ stuckTitle(game.stuckCause) }}</b>
+          <div class="sb-sub">{{ stuckSub(game.stuckCause) }}</div>
           <button
             class="sb-btn"
             :disabled="retrying === 'black'"
@@ -413,7 +425,8 @@ function moveLine(m: MoveRecord): string {
           data-testid="stuck-red"
         >
           <span class="sb-ico">⏱</span>
-          <b>已超时</b>
+          <b>{{ stuckTitle(game.stuckCause) }}</b>
+          <div class="sb-sub">{{ stuckSub(game.stuckCause) }}</div>
           <button
             class="sb-btn"
             :disabled="retrying === 'red'"
@@ -985,9 +998,10 @@ function moveLine(m: MoveRecord): string {
   color: var(--amber);
   font-weight: 700;
 }
-/* 超时挂起条(对应方侧栏顶部):已超时 + 重试 */
+/* 超时挂起条(对应方侧栏顶部):已超时 + 重试(副标题按成因区分) */
 .stuck-banner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   font-size: 13px;
@@ -999,6 +1013,12 @@ function moveLine(m: MoveRecord): string {
 }
 .stuck-banner .sb-ico {
   font-size: 15px;
+}
+.stuck-banner .sb-sub {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--ink);
+  opacity: 0.65;
 }
 .stuck-banner b {
   color: var(--amber);
