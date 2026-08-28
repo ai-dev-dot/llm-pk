@@ -19,6 +19,8 @@
 import type { MoveChoice, MoveContext, Player } from '../arena';
 import { NetworkError, PlayerCancelled } from '../arena';
 import type { Usage } from '../game-log';
+import type { DebugLogSink } from '../debug-log';
+import { rawBodyForDebug } from '../debug-log';
 import type { Side } from '../../engine/types';
 import { buildSystemPrompt } from '../../scripts/spike-prompt';
 
@@ -75,6 +77,13 @@ export interface AnthropicPlayerConfig {
   thinkingMode?: 'off' | 'high' | 'max';
   /** 每百万 token 单价(USD),默认 `DEFAULT_TOKENS_PER_M`。 */
   tokensPerM?: TokensPerM;
+  /**
+   * 调试日志写口(可选):在 IPC 边界记录「完整交互」——每条请求写 `player-request`
+   * (完整请求体),每条响应写 `player-response`(完整原始响应文本/错误);失败写
+   * `player-error`。缺省不记录。常由 http.ts 注入 metaDebugSink(自带 gameId/side/model)。
+   * 纯旁路,不参与任何对局判定(密钥隔离由 sink 侧 sanitizeForLog 兜底)。
+   */
+  debugLog?: DebugLogSink;
 }
 
 /** 强制工具输出 `{ analysis, move }`。 */
@@ -187,6 +196,7 @@ export class AnthropicPlayer implements Player {
   private readonly systemPrompt?: string;
   private readonly thinkingMode: 'off' | 'high' | 'max';
   private readonly stream: boolean;
+  private readonly debugLog?: DebugLogSink;
   /** 构造契约占位(透传 arena),player 层不自行重试。 */
   public readonly networkRetryBaseDelayMs?: number;
   /** 当前飞行请求的 AbortController(pause abort 用);无飞行请求时 null。 */
@@ -208,6 +218,7 @@ export class AnthropicPlayer implements Player {
     // G3:默认非流式(JSON 一次性返回)。GLM 等 Anthropic 兼容端点对「流式 + thinking」实现不完整
     // (黑洞/狂流/max_tokens 不生效);非流式路径遵守总输出上限。需实时思考展示时显式 stream:true。
     this.stream = cfg.stream ?? false;
+    this.debugLog = cfg.debugLog;
   }
 
   /** 外部中止当前飞行请求(arena.pause 冻结回合用):置取消标志并 abort → 后续 AbortError 识别为暂停中止。 */
@@ -227,7 +238,7 @@ export class AnthropicPlayer implements Player {
     // 注:畸形端点响应(缺 stop_reason 等)不在此列,直接走原有"空 move → 打回"语义。
     for (let attempt = 0; ; attempt++) {
       const user = attempt === 0 ? baseUser : `${baseUser}\n\n${TRUNCATED_HINT}`;
-      const parsed = await this.callOnce(system, user, ctx.onThought);
+      const parsed = await this.callOnce(system, user, ctx.onThought, attempt);
       const elapsedMs = Date.now() - started;
       if (parsed.usage) this.lastUsage = parsed.usage;
       const missingMove = parsed.move === '';
@@ -244,8 +255,23 @@ export class AnthropicPlayer implements Player {
     }
   }
 
+  /** 调试记录 helper:失败(网络/超时/读体失败)统一写一条 `player-error`。 */
+  private writePlayerError(attempt: number, name: string, message: string, retryable: boolean): void {
+    this.debugLog?.write({
+      kind: 'player-error',
+      ts: new Date().toISOString(),
+      attempt,
+      error: { name, message, retryable },
+    });
+  }
+
   /** 单次 Messages 请求(网络/HTTP/解析;超时与 pause 语义保持原样)。 */
-  private async callOnce(system: string, user: string, onThought?: (chunk: string) => void): Promise<ParsedBody> {
+  private async callOnce(
+    system: string,
+    user: string,
+    onThought?: (chunk: string) => void,
+    attempt = 0,
+  ): Promise<ParsedBody> {
     // 思考模式(原则 E),对齐 deepseek 官方双旋钮:off → 开关 disabled(防端点默认开后门);
     // high/max → 开关 enabled + 强度 effort('high'|'max');off 不查 effort。
     // 不附 budget_tokens:显式思考预算在部分兼容端点(如 GLM)静默黑洞,预算交端点默认。
@@ -265,10 +291,19 @@ export class AnthropicPlayer implements Player {
       ...(this.stream ? { stream: true } : {}),
     };
 
+    const reqStart = Date.now();
     const controller = new AbortController();
     this.ctl = controller;
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let res: Response;
+    // 完整交互日志:请求体全量(meta sink 自动补 gameId/side/model;写盘侧 sanitize 兜底密钥)。
+    this.debugLog?.write({
+      kind: 'player-request',
+      ts: new Date().toISOString(),
+      attempt,
+      url: messagesUrl(this.baseUrl),
+      body,
+    });
     try {
       res = await fetch(messagesUrl(this.baseUrl), {
         method: 'POST',
@@ -285,8 +320,15 @@ export class AnthropicPlayer implements Player {
       if (err instanceof Error && err.name === 'AbortError') {
         // 被外部 pause 中止(cancelPending)→ 暂停信号,不算超时、不算失败
         if (this.cancelled) throw new PlayerCancelled('回合被暂停中止');
+        this.writePlayerError(attempt, 'api-timeout', `api timeout(>${this.timeoutMs}ms)`, true);
         throw new NetworkError(`api timeout(>${this.timeoutMs}ms)`, true);
       }
+      this.writePlayerError(
+        attempt,
+        'network',
+        `network error: ${err instanceof Error ? err.message : String(err)}`,
+        true,
+      );
       throw new NetworkError(`network error: ${err instanceof Error ? err.message : String(err)}`, true);
     } finally {
       // 注意:流式读取期间超时定时器仍需工作,故不能在这里 clear —— 移到读取完成后的收尾。
@@ -302,19 +344,52 @@ export class AnthropicPlayer implements Player {
       } catch {
         json = null;
       }
+      const retryable = res.status === 429 || res.status >= 500;
+      this.debugLog?.write({
+        kind: 'player-response',
+        ts: new Date().toISOString(),
+        attempt,
+        status: res.status,
+        ok: false,
+        rawText: rawBodyForDebug(text),
+        error: { message: httpErrorMessage(res.status, json), retryable },
+      });
       throw this.httpError(res.status, json);
     }
 
     try {
-      return this.stream
+      const parsed = this.stream
         ? await readSseBody(res, this.tokensPerM, onThought)
         : await readJsonBody(res, this.tokensPerM);
+      this.debugLog?.write({
+        kind: 'player-response',
+        ts: new Date().toISOString(),
+        attempt,
+        status: res.status,
+        ok: true,
+        rawText: parsed.rawText !== undefined ? rawBodyForDebug(parsed.rawText) : undefined,
+        extracted: {
+          analysis: parsed.analysis,
+          move: parsed.move,
+          stopReason: parsed.stopReason,
+          usage: parsed.usage,
+        },
+        elapsedMs: Date.now() - reqStart,
+      });
+      return parsed;
     } catch (err) {
       if (err instanceof NetworkError) throw err;
       if (err instanceof Error && err.name === 'AbortError') {
         if (this.cancelled) throw new PlayerCancelled('回合被暂停中止');
+        this.writePlayerError(attempt, 'api-timeout', `api timeout(>${this.timeoutMs}ms)`, true);
         throw new NetworkError(`api timeout(>${this.timeoutMs}ms)`, true);
       }
+      this.writePlayerError(
+        attempt,
+        'read-body',
+        `读响应体失败: ${err instanceof Error ? err.message : String(err)}`,
+        true,
+      );
       throw new NetworkError(`读响应体失败: ${err instanceof Error ? err.message : String(err)}`, true);
     } finally {
       clearTimeout(timer);
@@ -343,6 +418,8 @@ interface SseFinal {
 interface ParsedBody extends SseFinal {
   usage: Usage;
   stopReason?: string;
+  /** 完整原始响应文本(调试日志用):非流式=整段 JSON;流式=SSE 事件全文(含思考)。 */
+  rawText?: string;
 }
 
 /** 从非流式 JSON 读 stop_reason(max_tokens = 截断标志)。 */
@@ -378,7 +455,7 @@ async function readJsonBody(res: Response, tokensPerM: TokensPerM): Promise<Pars
   const { analysis, move } = extractToolUse(json);
   const usage = readUsage(json, tokensPerM);
   const stopReason = readStopReason(json);
-  return { analysis, move, usage, stopReason };
+  return { analysis, move, usage, stopReason, rawText: text };
 }
 
 /**
@@ -398,6 +475,8 @@ async function readSseBody(
   if (!res.body) return readJsonBody(res, tokensPerM);
 
   let allText = '';
+  /** 完整原始响应(含思考全文)累加——SSE 事件被 `allText` 切走时此累加永不裁剪。 */
+  const rawAccum: string[] = [];
   let jsonBuf = '';
   const receivedAnySse = { value: false };
   let emitted = 0;
@@ -441,7 +520,9 @@ async function readSseBody(
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
-        allText += decoder.decode(value, { stream: true });
+        const decoded = decoder.decode(value, { stream: true });
+        rawAccum.push(decoded);
+        allText += decoded;
         // 边读边切走已完整的 SSE 块(\n\n 结尾)
         for (;;) {
           const idx = allText.indexOf('\n\n');
@@ -464,15 +545,20 @@ async function readSseBody(
     throw new NetworkError(`读响应体失败(stream): ${err instanceof Error ? err.message : String(err)}`, true);
   }
 
+  const rawText = rawAccum.join('');
   if (receivedAnySse.value) {
-    return finalizeSse(jsonBuf, usageRaw, tokensPerM);
+    return finalizeSse(jsonBuf, usageRaw, tokensPerM, rawText);
   }
-  // 无任何 SSE 事件 → 回退非流式(与 readJsonBody 等价)
-  return readJsonBodyFallback(allText, tokensPerM);
+  // 无任何 SSE 事件 → 回退非流式(与 readJsonBody 等价);正文即未切走的 full text。
+  return readJsonBodyFallback(rawText, tokensPerM, rawText);
 }
 
 /** 完全没 SSE 事件时,把累积的 body 文本当普通 JSON 解析。 */
-async function readJsonBodyFallback(bodyText: string, tokensPerM: TokensPerM): Promise<ParsedBody> {
+async function readJsonBodyFallback(
+  bodyText: string,
+  tokensPerM: TokensPerM,
+  rawText: string,
+): Promise<ParsedBody> {
   let json: unknown = null;
   try {
     json = bodyText ? (JSON.parse(bodyText) as unknown) : null;
@@ -482,7 +568,7 @@ async function readJsonBodyFallback(bodyText: string, tokensPerM: TokensPerM): P
   const { analysis, move } = extractToolUse(json);
   const usage = readUsage(json, tokensPerM);
   const stopReason = readStopReason(json);
-  return { analysis, move, usage, stopReason };
+  return { analysis, move, usage, stopReason, rawText };
 }
 
 /** SSE 事件字段提取(格式:event:\n data:{json}\n\n)。 */
@@ -534,7 +620,12 @@ function extractAnalysisPrefix(json: string): string {
  * SSE 全部读完:用累积工具 input(jsonBuf,shape `{analysis, move}`,并非完整响应)
  * 解析最终 {analysis, move};usage 从事件中单独累计。未闭合/坏 JSON → 空 move 走打回。
  */
-function finalizeSse(jsonBuf: string, usageRaw: AnthropicUsage, tokensPerM: TokensPerM): ParsedBody {
+function finalizeSse(
+  jsonBuf: string,
+  usageRaw: AnthropicUsage,
+  tokensPerM: TokensPerM,
+  rawText: string,
+): ParsedBody {
   let json: unknown = null;
   try {
     json = jsonBuf ? (JSON.parse(jsonBuf) as unknown) : null;
@@ -545,7 +636,12 @@ function finalizeSse(jsonBuf: string, usageRaw: AnthropicUsage, tokensPerM: Toke
   const analysis = typeof input.analysis === 'string' ? input.analysis : '';
   const move = typeof input.move === 'string' ? input.move : '';
   const usage = { promptTokens: toNum(usageRaw.input_tokens), completionTokens: toNum(usageRaw.output_tokens) };
-  return { analysis, move, usage: { ...usage, costUsd: estimateCostUsd(usage.promptTokens, usage.completionTokens, tokensPerM) } };
+  return {
+    analysis,
+    move,
+    usage: { ...usage, costUsd: estimateCostUsd(usage.promptTokens, usage.completionTokens, tokensPerM) },
+    rawText,
+  };
 }
 
 /**

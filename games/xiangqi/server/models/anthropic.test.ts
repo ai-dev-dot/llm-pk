@@ -531,3 +531,113 @@ describe('思考模式(原则 E)', () => {
     expect(b.output_config).toEqual({ effort: 'high' });
   });
 });
+
+/* ---------- 调试交互日志(每局×每模型:完整请求/响应原文) ---------- */
+
+describe('AnthropicPlayer 调试日志(debugLog)', () => {
+  function memSink(): { entries: Array<Record<string, unknown>>; sink: { write(e: Record<string, unknown>): void } } {
+    const entries: Array<Record<string, unknown>> = [];
+    return { entries, sink: { write: (e) => entries.push(e) } };
+  }
+  /** max_tokens 截断(stop_reason=max_tokens,无 tool_use)后正常返回的成对序列。 */
+  function sseBodyForDebug(): string {
+    const toolInputJson = '{"analysis":"我思考中——","move":"h3-e3"}';
+    return [
+      { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"analysis":"我思考' } },
+      { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '中——"' } },
+      { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: ',"move":"h3-e3"}' } },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { input_tokens: 100, output_tokens: 20 } },
+    ]
+      .map((j) => `event: message\ndata: ${JSON.stringify(j)}\n\n`)
+      .join('');
+  }
+
+  it('成功路径:player-request 含完整请求体;player-response 含完整 rawText 与 extracted', async () => {
+    stubFetch(toolUseResponse());
+    const { entries, sink } = memSink();
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', debugLog: sink });
+    await p.pickMove(fakeCtx);
+
+    expect(entries.length).toBe(2); // request + response(单次调用)
+    const req = entries[0]!;
+    expect(req['kind']).toBe('player-request');
+    expect(req['attempt']).toBe(0);
+    expect(req['url']).toBe('http://x/v1/messages');
+    expect(typeof req['ts']).toBe('string');
+    const body = req['body'] as Record<string, unknown>;
+    expect(body['system']).toContain('红方');
+    expect((body['messages'] as Array<{ content: string }>)[0]!['content']).toContain(fakeCtx.asciiBoard);
+    expect(body['tools']).toBeDefined(); // 完整请求体原样入档
+
+    const resp = entries[1]!;
+    expect(resp['kind']).toBe('player-response');
+    expect(resp['status']).toBe(200);
+    expect(resp['ok']).toBe(true);
+    const raw = resp['rawText'] as Record<string, unknown>;
+    expect(raw['stop_reason']).toBe('tool_use'); // 完整 JSON 原文(parse 后净化对象)
+    expect(raw['usage']).toEqual({ input_tokens: 100, output_tokens: 20 });
+    const ex = resp['extracted'] as Record<string, unknown>;
+    expect(ex['move']).toBe('h3-e3');
+    expect(ex['analysis']).toBe('瞄中路');
+    expect(typeof resp['elapsedMs']).toBe('number');
+  });
+
+  it('非 2xx(401):player-response ok:false 带状态码与净化错误体;error.retryable=false', async () => {
+    stubFetch(new Response(JSON.stringify({ error: { message: 'Invalid API key' } }), { status: 401 }));
+    const { entries, sink } = memSink();
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', debugLog: sink });
+    await expect(p.pickMove(fakeCtx)).rejects.toMatchObject({ name: 'NetworkError' });
+
+    expect(entries.length).toBe(2);
+    const resp = entries[1]!;
+    expect(resp['kind']).toBe('player-response');
+    expect(resp['status']).toBe(401);
+    expect(resp['ok']).toBe(false);
+    expect(resp['rawText']).toEqual({ error: { message: 'Invalid API key' } });
+    expect((resp['error'] as Record<string, unknown>)?.['retryable']).toBe(false);
+    expect((resp['error'] as Record<string, unknown>)?.['message']).toContain('Invalid API key');
+  });
+
+  it('SSE 流式:rawText 为完整原始事件流(含思考全文,纯文本原文)', async () => {
+    const bodyText = sseBodyForDebug();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(bodyText, { status: 200, headers: { 'content-type': 'text/event-stream' } }))),
+    );
+    const { entries, sink } = memSink();
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', stream: true, debugLog: sink });
+    const c = await p.pickMove(fakeCtx);
+
+    expect(c.move).toBe('h3-e3');
+    const resp = entries[1]!;
+    expect(resp['kind']).toBe('player-response');
+    expect(resp['rawText']).toBe(bodyText); // SSE 全文(非 JSON → 原样字符串,不裁剪)
+  });
+
+  it('max_tokens 截断重发:attempt 0 / 1 各记 request+response(四次请求边界)', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ stop_reason: 'max_tokens', content: [] }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            stop_reason: 'tool_use',
+            content: [{ type: 'tool_use', input: { analysis: '精简', move: 'h3-e3' } }],
+            usage: { input_tokens: 5, output_tokens: 3 },
+          }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    const { entries, sink } = memSink();
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', debugLog: sink });
+    const c = await p.pickMove(fakeCtx);
+
+    expect(c.move).toBe('h3-e3');
+    expect(entries.length).toBe(4); // req(resp) req(resp)
+    expect(entries[0]!['attempt']).toBe(0);
+    expect(entries[1]!['attempt']).toBe(0);
+    expect(entries[2]!['attempt']).toBe(1);
+    expect(entries[3]!['attempt']).toBe(1);
+  });
+});

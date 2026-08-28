@@ -305,3 +305,60 @@ describe('reviewGame 默认 client(原生 fetch)', () => {
     }
   });
 });
+
+/* ---------- 复盘调试日志(debugLog) ---------- */
+
+describe('复盘调试日志(debugLog)', () => {
+  function memSink(): { entries: Array<Record<string, unknown>>; sink: { write(e: Record<string, unknown>): void } } {
+    const entries: Array<Record<string, unknown>> = [];
+    return { entries, sink: { write: (e) => entries.push(e) } };
+  }
+
+  it('成功路径:review-request 含完整请求体(digest),review-response 含完整原文;请求体绝无密钥', async () => {
+    const innerText = JSON.stringify({ summary: '红胜', highlights: ['a'], mistakes: [] });
+    vi.stubGlobal(
+      'fetch',
+      async () =>
+        new Response(
+          JSON.stringify({ content: [{ type: 'text', text: innerText }], usage: { input_tokens: 1, output_tokens: 2 } }),
+          { status: 200 },
+        ),
+    );
+    const { entries, sink } = memSink();
+    const result = await reviewGame(sampleEvents(), makeCtx({ apiKey: 'sk-review-x', debugLog: sink }));
+    expect(result.kind).toBe('ok');
+
+    expect(entries.length).toBe(2);
+    const req = entries[0]!;
+    expect(req['kind']).toBe('review-request');
+    expect(req['url']).toContain('/v1/messages');
+    const reqBody = req['body'] as Record<string, unknown>;
+    const digest = (reqBody['messages'] as Array<{ content: string }>)[0]!['content'];
+    expect(digest).toContain('炮二平五'); // 公共叙述(digest)入档
+    expect(JSON.stringify(req)).not.toContain('sk-review-x'); // 密钥绝不入正文记录
+
+    const resp = entries[1]!;
+    expect(resp['kind']).toBe('review-response');
+    expect(resp['status']).toBe(200);
+    expect(resp['ok']).toBe(true);
+    const raw = resp['rawText'] as Record<string, unknown>;
+    expect((raw['content'] as Array<{ text: string }>)[0]!['text']).toContain('红胜'); // 完整原文入档
+    expect(typeof resp['elapsedMs']).toBe('number');
+  });
+
+  it('fetch 500:review-response ok:false 已记录;结果仍 degraded、请求/响应两条齐全', async () => {
+    vi.stubGlobal('fetch', async () => new Response('{"error":{"message":"boom"}}', { status: 500 }));
+    const { entries, sink } = memSink();
+    const result = await reviewGame(sampleEvents(), makeCtx({ debugLog: sink }));
+    expect(result).toEqual({ kind: 'degraded' });
+
+    expect(entries.length).toBe(2);
+    expect(entries[0]!['kind']).toBe('review-request');
+    const resp = entries[1]!;
+    expect(resp['kind']).toBe('review-response');
+    expect(resp['status']).toBe(500);
+    expect(resp['ok']).toBe(false);
+    expect(resp['rawText']).toEqual({ error: { message: 'boom' } }); // 错误体净化入档
+    expect(resp['error']).toEqual({ message: 'HTTP 500', retryable: false });
+  });
+});

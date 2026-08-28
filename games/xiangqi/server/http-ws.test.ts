@@ -12,11 +12,12 @@
 // 玩家注入构建器,全部为脚本化/闸门 Player,绝不触网。
 //
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
@@ -95,6 +96,8 @@ interface TestServer {
   port: number;
   registry: import('./game-registry').GameRegistry;
   store: Map<string, GameRecord>;
+  /** 测试注入/推导的调试日志目录(与 logDir 平级语义)。 */
+  debugLogDir: string;
   dispose: () => Promise<void>;
 }
 
@@ -103,10 +106,13 @@ async function startServer(
   buildPlayer?: (side: Side, cfg?: ResolvedSide) => Player,
   reviewClient?: ReviewClient,
   config?: ServerDefaults,
+  debugLogDir?: string,
 ): Promise<TestServer> {
   const logDir = await mkdtemp(join(tmpdir(), 'xiangqi-http-ws-'));
+  const dLogDir = debugLogDir ?? (await mkdtemp(join(tmpdir(), 'xiangqi-debug-')));
   const srv = createXiangqiServer({
     logDir,
+    debugLogDir: dLogDir,
     buildPlayer: buildPlayer ? (side, cfg) => buildPlayer(side, cfg) : undefined,
     reviewClient,
     config,
@@ -122,8 +128,9 @@ async function startServer(
     await new Promise<void>((res) => srv.wss.close(() => res()));
     await new Promise<void>((res) => srv.server.close(() => res()));
     await rm(logDir, { recursive: true, force: true });
+    await rm(dLogDir, { recursive: true, force: true });
   };
-  return { server: srv.server, port, registry: srv.registry, store: srv.store, dispose };
+  return { server: srv.server, port, registry: srv.registry, store: srv.store, debugLogDir: dLogDir, dispose };
 }
 
 /** 基础建局请求体:红黑各 baseUrl/apiKey/model(必填)。 */
@@ -1115,6 +1122,91 @@ describe('GET /api/logs 与空 body 回落 config', () => {
       // 对局已结束再重试 → 409
       expect((await request(srv.server).post(`/api/games/${id}/retry`).send({ side: 'red' })).status).toBe(409);
     } finally {
+      await srv.dispose();
+    }
+  });
+});
+
+/* ---------- 调试交互日志接线(debug_logs;真实 AnthropicPlayer + fetch stub) ---------- */
+
+describe('调试交互日志(debug_logs)', () => {
+  function readJsonl(file: string): Array<Record<string, unknown>> {
+    return readFileSync(file, 'utf8')
+      .split(/\r?\n/)
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+  }
+  function toolResp(move: string): Response {
+    return new Response(
+      JSON.stringify({
+        content: [
+          { type: 'text', text: 'ok' },
+          { type: 'tool_use', name: 'pick_move', input: { analysis: 'a', move } },
+        ],
+        stop_reason: 'tool_use',
+        usage: { input_tokens: 10, output_tokens: 5 },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  }
+
+  /** 真实对局(默认 AnthropicPlayer):红黑各落 `<gid>_<模型>.jsonl`,复盘落 `<gid>_review_<模型>.jsonl`。 */
+  it('红黑各一文件 + 复盘一文件;每文件 request/response 两条,meta 注入 gameId/side/model,全程无密钥', async () => {
+    const reviewResp = new Response(
+      JSON.stringify({
+        content: [{ type: 'text', text: '{"summary":"红胜","highlights":[],"mistakes":[]}' }],
+        usage: { input_tokens: 3, output_tokens: 2 },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(toolResp('h3-e3')) // 红炮二平五(合法)
+      .mockResolvedValueOnce(toolResp('i7-i6')) // 黑卒7进1(合法)
+      .mockResolvedValue(reviewResp); // 赛后复盘(独立凭据)
+    vi.stubGlobal('fetch', fetchMock);
+
+    const srv = await startServer();
+    try {
+      const { id } = await createGame(srv.server, {
+        red: { baseUrl: 'http://localhost:1', apiKey: SECRET, model: 'm-red' },
+        black: { baseUrl: 'http://localhost:1', apiKey: SECRET, model: 'm-black' },
+        review: { baseUrl: 'http://localhost:1', apiKey: SECRET, model: 'm-review' },
+        config: { maxTotalMoves: 2 }, // 红黑各走一步即收尾(draw-max-moves)
+      });
+      await waitFor(() => srv.store.get(id)?.arena.state === 'finished');
+      // 复盘异步触发:轮询到 review 文件补齐 request+response 两行
+      await waitFor(() => {
+        const p = join(srv.debugLogDir, `${id}_review_m-review.jsonl`);
+        return existsSync(p) && readJsonl(p).length >= 2;
+      });
+
+      // 红:request(完整请求体)+ response(完整原文)
+      const redLines = readJsonl(join(srv.debugLogDir, `${id}_m-red.jsonl`));
+      expect(redLines.length).toBe(2);
+      expect(redLines[0]).toMatchObject({ kind: 'player-request', gameId: id, side: 'red', model: 'm-red', attempt: 0 });
+      const redBody = redLines[0]['body'] as { messages: Array<{ content: string }> };
+      expect(redBody.messages[0]!.content).toContain('当前局面'); // 棋盘上下文完整入档
+      expect(redLines[1]).toMatchObject({ kind: 'player-response', side: 'red', ok: true, status: 200 });
+      expect((redLines[1]['rawText'] as { stop_reason: string })['stop_reason']).toBe('tool_use');
+      expect((redLines[1]['extracted'] as { move: string })['move']).toBe('h3-e3');
+
+      // 黑
+      const blackLines = readJsonl(join(srv.debugLogDir, `${id}_m-black.jsonl`));
+      expect(blackLines.length).toBe(2);
+      expect(blackLines[0]).toMatchObject({ kind: 'player-request', gameId: id, side: 'black', model: 'm-black' });
+      expect(blackLines[1]).toMatchObject({ kind: 'player-response', side: 'black', ok: true });
+
+      // 复盘
+      const reviewLines = readJsonl(join(srv.debugLogDir, `${id}_review_m-review.jsonl`));
+      expect(reviewLines[0]).toMatchObject({ kind: 'review-request', gameId: id, model: 'm-review' });
+      expect(reviewLines[1]).toMatchObject({ kind: 'review-response', ok: true, status: 200 });
+      expect((reviewLines[1]['rawText'] as { content: Array<{ text: string }> })).toBeDefined();
+
+      // 全程绝无密钥
+      expect(JSON.stringify([...redLines, ...blackLines, ...reviewLines])).not.toContain(SECRET);
+    } finally {
+      vi.unstubAllGlobals();
       await srv.dispose();
     }
   });

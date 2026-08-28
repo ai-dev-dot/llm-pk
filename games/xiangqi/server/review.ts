@@ -15,6 +15,8 @@
 
 import type { GameEvent, Usage } from './game-log';
 import { readAllEvents } from './game-log';
+import type { DebugLogSink } from './debug-log';
+import { rawBodyForDebug } from './debug-log';
 import type { Side } from '../engine/types';
 import { DEFAULT_TOKENS_PER_M, estimateCostUsd, type TokensPerM } from './models/anthropic';
 
@@ -48,6 +50,8 @@ export interface ReviewClientConfig {
   timeoutMs?: number;
   maxTokens?: number;
   tokensPerM?: TokensPerM;
+  /** 调试日志写口(可选):默认 client 在 IPC 边界记 `review-request`/`review-response`/`review-error`。 */
+  debugLog?: DebugLogSink;
 }
 
 export interface ReviewContext extends ReviewClientConfig {
@@ -185,12 +189,16 @@ function createDefaultClient(cfg: ReviewClientConfig): ReviewClient {
         system: REVIEW_SYSTEM,
         messages: [{ role: 'user', content: digest }],
       };
+      const url = messagesUrl(cfg.baseUrl);
+      // 完整交互日志:请求体(digest 含整局公共叙述;meta sink 补 gameId/model;写盘侧 sanitize)。
+      const ts = (): string => new Date().toISOString();
+      cfg.debugLog?.write({ kind: 'review-request', ts: ts(), url, body });
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       let res: Response;
       try {
-        res = await fetch(messagesUrl(cfg.baseUrl), {
+        res = await fetch(url, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -201,14 +209,42 @@ function createDefaultClient(cfg: ReviewClientConfig): ReviewClient {
           signal: controller.signal,
         });
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') throw new Error(`复盘请求超时(>${timeoutMs}ms)`);
-        throw err;
+        const message =
+          err instanceof Error && err.name === 'AbortError'
+            ? `复盘请求超时(>${timeoutMs}ms)`
+            : `复盘网络错误: ${err instanceof Error ? err.message : String(err)}`;
+        cfg.debugLog?.write({ kind: 'review-error', ts: ts(), url, error: { message, retryable: true } });
+        throw new Error(message);
       } finally {
         clearTimeout(timer);
       }
 
-      if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
+      if (res.status < 200 || res.status >= 300) {
+        let errText = '';
+        try {
+          errText = await res.text();
+        } catch {
+          /* 读错误体失败不阻碍降级 */
+        }
+        cfg.debugLog?.write({
+          kind: 'review-response',
+          ts: ts(),
+          status: res.status,
+          ok: false,
+          rawText: rawBodyForDebug(errText),
+          error: { message: `HTTP ${res.status}`, retryable: false },
+        });
+        throw new Error(`HTTP ${res.status}${errText ? `: ${errText.slice(0, 120)}` : ''}`);
+      }
       const text = await res.text();
+      cfg.debugLog?.write({
+        kind: 'review-response',
+        ts: ts(),
+        status: res.status,
+        ok: true,
+        rawText: rawBodyForDebug(text),
+        elapsedMs: Date.now() - started,
+      });
       let json: unknown;
       try {
         json = JSON.parse(text);

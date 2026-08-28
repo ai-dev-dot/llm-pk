@@ -27,6 +27,8 @@ import type { Player } from './arena';
 import { GameRegistry } from './game-registry';
 import type { GameEvent, GameLogSink, GameRulesSnapshot } from './game-log';
 import { appendEvent, readAllEvents } from './game-log';
+import type { DebugLogSink } from './debug-log';
+import { defaultDebugLogDir, metaDebugSink } from './debug-log';
 import { pickNextSeq, slugifySideLabel, yyyymmdd } from './game-id';
 import { scanLogs } from './game-archive';
 import { AnthropicPlayer, DEFAULT_TOKENS_PER_M } from './models/anthropic';
@@ -50,6 +52,8 @@ export interface ResolvedSide {
   maxTokens?: number;
   timeoutMs?: number;
   tokensPerM?: TokensPerM;
+  /** 调试日志写口(内部装配用,不透出任何构造):http.ts 为本方建 `<gid>_<模型>.jsonl` sink。 */
+  debugLog?: DebugLogSink;
 }
 
 export type PlayerFactory = (side: Side, cfg: ResolvedSide) => Player;
@@ -138,6 +142,8 @@ export interface XiangqiServerOptions {
   buildPlayer?: PlayerFactory;
   /** 日志目录;缺省 `games/xiangqi/logs`。 */
   logDir?: string;
+  /** 调试日志目录(每局×每模型完整交互);缺省与 logDir 平级的 `dirname(logDir)/debug_logs`。 */
+  debugLogDir?: string;
   /** `config.json` 缺省(作为请求体缺省补齐)。 */
   config?: ServerDefaults;
   /** 复盘客户端注入(测试替身);缺省 review 服务自建独立凭据客户端。 */
@@ -227,6 +233,7 @@ const defaultBuildPlayer: PlayerFactory = (side, cfg) =>
     timeoutMs: cfg.timeoutMs,
     tokensPerM: cfg.tokensPerM,
     thinkingMode: cfg.thinkingMode,
+    debugLog: cfg.debugLog,
   });
 
 const DEFAULT_LOG_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'logs');
@@ -237,6 +244,8 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
   const registry = opts.registry ?? new GameRegistry();
   const store = new Map<string, GameRecord>();
   const logDir = opts.logDir ?? DEFAULT_LOG_DIR;
+  // 调试日志目录:与 logs/ 平级(同父目录下的 debug_logs);测试可显式覆盖。
+  const debugLogDir = opts.debugLogDir ?? defaultDebugLogDir(logDir);
   const dflt = opts.config ?? {};
   const buildPlayer = opts.buildPlayer ?? defaultBuildPlayer;
 
@@ -269,10 +278,24 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     const sink = fileLogSink(logPath); // 与 arena 共用同一对象,事后复盘追加在同一 seq 序列上
     // 原则 E:同一思考模式以同一边界下发给红黑双方。
     const thinkingMode = rules.thinkingMode;
+    // 调试交互日志:每局 × 每个大模型一文件(`<gid>_<模型名>.jsonl`);红黑同名模型时两流
+    // append 同一文件、entry 的 side 字段区分;meta 闭包注入 gameId/side/model/label 常量。
+    const redDebug = metaDebugSink(join(debugLogDir, `${gid}_${slugifySideLabel(red.model)}.jsonl`), {
+      gameId: gid,
+      side: 'red',
+      model: red.model,
+      label: red.label,
+    });
+    const blackDebug = metaDebugSink(join(debugLogDir, `${gid}_${slugifySideLabel(black.model)}.jsonl`), {
+      gameId: gid,
+      side: 'black',
+      model: black.model,
+      label: black.label,
+    });
     const arena = registry.create({
       gameId: gid,
-      red: { player: buildPlayer('red', { ...red, thinkingMode }), model: red.model, systemPrompt: red.systemPrompt },
-      black: { player: buildPlayer('black', { ...black, thinkingMode }), model: black.model, systemPrompt: black.systemPrompt },
+      red: { player: buildPlayer('red', { ...red, thinkingMode, debugLog: redDebug }), model: red.model, systemPrompt: red.systemPrompt },
+      black: { player: buildPlayer('black', { ...black, thinkingMode, debugLog: blackDebug }), model: black.model, systemPrompt: black.systemPrompt },
       sink,
       rules,
       maxCostPerGame,
@@ -297,7 +320,7 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
     const reviewOpts = resolveReview(body.review, dflt);
     if (reviewOpts) {
       arena.onEvent.on('finish', () => {
-        void triggerReview(record, { ...reviewOpts, client: opts.reviewClient }).catch(() => {
+        void triggerReview(record, { ...reviewOpts, client: opts.reviewClient }, debugLogDir).catch(() => {
           /* reviewGame 已兜底为 degraded;此处防御意外同步抛错 */
         });
       });
@@ -639,8 +662,14 @@ function resolveTokensPerM(
  * 终局后异步触发赛后复盘:ok 则以同一 sink 追加 `review` 事件(seq 延续),
  * 并同步进内存镜像 + 广播(WS 实时帧与断线重连补发同源);degraded 静默不作任何落地。
  */
-async function triggerReview(record: GameRecord, ctx: ReviewContext): Promise<void> {
-  const result = await reviewGame([...record.events], ctx);
+async function triggerReview(record: GameRecord, ctx: ReviewContext, debugLogDir: string): Promise<void> {
+  // 复盘独立凭据沿目录落到 `<gid>_review_<模型>.jsonl`(meta 闭包注入 gameId/model)。注入 client
+  // 时由测试替身决定是否记录;缺省 client 在默认 fetch 边界记录完整交互。
+  const debugLog = metaDebugSink(
+    join(debugLogDir, `${record.id}_review_${slugifySideLabel(ctx.model)}.jsonl`),
+    { gameId: record.id, model: ctx.model, label: ctx.model },
+  );
+  const result = await reviewGame([...record.events], { ...ctx, debugLog });
   if (result.kind !== 'ok') return;
   const { review } = result;
   const recorded = appendEvent(record.sink, {

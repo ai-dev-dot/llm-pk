@@ -5,4 +5,6 @@ scripts/spike-result.json
 
 # 对局日志(spec: logs/ 目录 gitignore)
 logs/
+# 调试交互日志(与 logs/ 平级;每局×每模型完整请求/响应,含思考全文,体量大不入库)
+debug_logs/
 files/
