@@ -451,8 +451,10 @@ async function readJsonBody(res: Response, tokensPerM: TokensPerM): Promise<Pars
 
 /**
  * 流式路径:body 按 Web ReadableStream 读,累加为文本后按「\n\n」分块解析 SSE 事件。
+ * - `content_block_delta.thinking_delta.thinking` → 思考增量,直接调 `onThought`;
  * - `content_block_delta.input_json_delta.partial_json` → 拼到 jsonBuf;
- * - 用 AnalysisScraper 实时截取 analysis 增量 → 调 `onThought`(若提供);
+ * - 未出现 thinking_delta 时(如 GLM 兼容端点把思考放工具参数),用 AnalysisScraper
+ *   实时截取 analysis 增量 → 调 `onThought`(与 thinking_delta 互斥,避免双份推送);
  * - 全部读完 / message_stop → JSON.parse(jsonBuf) 取最终 {analysis, move} + usage。
  *
  * 兼容性回退:若 body 读完仍**没有任何 SSE 事件**(如网关返回普通 JSON),
@@ -471,6 +473,8 @@ async function readSseBody(
   let jsonBuf = '';
   const receivedAnySse = { value: false };
   let emitted = 0;
+  /** 本响应是否已出现过 thinking_delta(出现后 analysis 前缀不再推,避免双份思考)。 */
+  let sawThinking = false;
   let usageRaw: AnthropicUsage = {};
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -496,8 +500,16 @@ async function readSseBody(
     }
     if (obj.type !== 'content_block_delta') return;
     const delta = obj.delta as Record<string, unknown> | undefined;
-    if (!delta || delta.type !== 'input_json_delta' || typeof delta.partial_json !== 'string') return;
+    if (!delta || typeof delta !== 'object') return;
+    // 思考增量(Anthropic 原生 thinking_delta):实时推给 onThought;后续 analysis 前缀不再重复推
+    if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string' && delta.thinking) {
+      sawThinking = true;
+      onThought?.(delta.thinking);
+      return;
+    }
+    if (delta.type !== 'input_json_delta' || typeof delta.partial_json !== 'string') return;
     jsonBuf += delta.partial_json as string;
+    if (sawThinking) return;
     const cur = extractAnalysisPrefix(jsonBuf);
     if (onThought && cur.length > emitted) {
       const chunk = cur.slice(emitted);

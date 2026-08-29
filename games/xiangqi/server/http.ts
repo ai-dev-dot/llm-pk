@@ -259,7 +259,7 @@ const defaultBuildPlayer: PlayerFactory = (side, cfg) => {
   };
   return cfg.protocol === 'openai'
     ? new OpenAIPlayer({ ...common, stream: cfg.stream })
-    : new AnthropicPlayer(common);
+    : new AnthropicPlayer({ ...common, stream: cfg.stream });
 };
 
 const DEFAULT_LOG_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'logs');

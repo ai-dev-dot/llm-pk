@@ -274,6 +274,7 @@ describe('OpenAIPlayer 流式(stream: true)', () => {
     expect(picked.usage?.completionTokens).toBe(222);
     const { body } = requestOf(fn);
     expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({ include_usage: true });
   });
 
   it('reasoning_content 经 onThought 推流(节流);默认关流式时不带 stream 字段', async () => {

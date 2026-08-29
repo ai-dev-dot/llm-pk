@@ -222,7 +222,9 @@ export class OpenAIPlayer implements Player {
     const body = {
       model: this.model,
       ...(this.maxTokens ? { max_tokens: this.maxTokens } : {}),
-      ...(this.stream ? { stream: true } : {}),
+      // stream_options.include_usage:OpenAI 兼容端点流式默认不回 usage,显式要求才随末包返回
+      // (方舟 GLM 端点实测缺省 usage 恒 0;加了才有 prompt/completion token 统计)。
+      ...(this.stream ? { stream: true, stream_options: { include_usage: true } } : {}),
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },

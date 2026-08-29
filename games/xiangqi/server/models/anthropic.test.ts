@@ -490,6 +490,31 @@ describe('AnthropicPlayer SSE 流式(G3)', () => {
     expect(c.move).toBe('h3-e3');
     expect(c.usage).toEqual({ promptTokens: 0, completionTokens: 0, costUsd: 0 });
   });
+
+  it('流式:thinking_delta(Anthropic 原生思考)实时推 onThought;analysis 前缀不重复推', async () => {
+    const chunks: string[] = [];
+    const ctx = { ...fakeCtx, onThought: (c: string) => chunks.push(c) };
+    const bodyText = [
+      { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: '我' } },
+      { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: '在思考' } },
+      { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"analysis":"总结","move":"h3-e3"}' } },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { input_tokens: 5, output_tokens: 3 } },
+    ]
+      .map(sseEvent)
+      .join('');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(bodyText, { status: 200, headers: { 'content-type': 'text/event-stream' } })),
+    );
+    const p = new AnthropicPlayer({ side: 'red', baseUrl: 'http://x', apiKey: 'k', model: 'm', stream: true });
+
+    const c = await p.pickMove(ctx);
+
+    expect(c.move).toBe('h3-e3');
+    expect(c.analysis).toBe('总结');
+    // 只推 thinking_delta 增量;analysis(工具参数内)不再重复推送
+    expect(chunks.join('')).toBe('我在思考');
+  });
 });
 
 /* ---------- 思考字段透传(原则 E 新版:config 管理,代码零映射) ---------- */

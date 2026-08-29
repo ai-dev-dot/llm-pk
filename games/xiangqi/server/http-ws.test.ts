@@ -1411,5 +1411,74 @@ describe('协议分发(config.models.<name>.protocol)', () => {
       await srv.dispose();
     }
   });
+
+  it('anthropic profile 的 stream:true 透传进请求体(此前被静默丢弃)', async () => {
+    const config: ServerDefaults = {
+      models: {
+        'ds-stream': {
+          base_url: 'https://api.deepseek.com/anthropic',
+          api_key: 'sk-ds',
+          model: 'deepseek-v4-flash',
+          stream: true,
+          max_tokens: 4096,
+        },
+        'red-ai': {
+          base_url: 'https://open.bigmodel.cn/api/paas/v4',
+          api_key: 'sk-red',
+          model: 'glm-5.3-flash',
+          protocol: 'openai',
+        },
+      },
+      red: { use: 'red-ai' },
+      black: { use: 'ds-stream' },
+    };
+    const srv = await startServer(undefined, undefined, config);
+    try {
+      const moveArgs = JSON.stringify({ analysis: 'a', move: 'h3-e3' });
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).includes('chat/completions')) {
+          // openai 红方
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: 'assistant',
+                    tool_calls: [{ id: 'c', type: 'function', function: { name: 'pick_move', arguments: moveArgs } }],
+                  },
+                  finish_reason: 'tool_calls',
+                },
+              ],
+              usage: { prompt_tokens: 1, completion_tokens: 1 },
+            }),
+            { status: 200 },
+          );
+        }
+        // anthropic 黑方
+        return new Response(
+          JSON.stringify({
+            content: [{ type: 'tool_use', name: 'pick_move', input: { analysis: 'a', move: 'i7-i6' } }],
+            stop_reason: 'tool_use',
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { id } = await createGame(srv.server, { config: { maxTotalMoves: 2 } }); // 红黑各走一步即收尾
+      await waitFor(() => srv.store.get(id)?.arena.state === 'finished');
+
+      const calls = fetchMock.mock.calls as unknown as Array<[string, { body: string }]>;
+      expect(calls).toHaveLength(2);
+      const blackReq = JSON.parse(calls[1]![1]!.body);
+      expect(blackReq.stream).toBe(true); // 此前 AnthropicPlayer 构造漏传 stream 导致配置被丢弃
+      expect(blackReq.max_tokens).toBe(4096);
+    } finally {
+      vi.unstubAllGlobals();
+      await srv.dispose();
+    }
+  });
 });
 
