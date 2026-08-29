@@ -55,7 +55,7 @@ export interface ResolvedSide {
   maxTokens?: number;
   timeoutMs?: number;
   tokensPerM?: TokensPerM;
-  /** 流式(SSE,仅 openai 适配器):长思考防网关空闲掐断(GLM coding 端点约 5 分钟掐非流式长请求)。 */
+  /** 流式(SSE):长思考防网关空闲掐断(GLM coding 端点约 5 分钟掐非流式长请求);双协议适配器均消费。 */
   stream?: boolean;
   /** 调试日志写口(内部装配用,不透出任何构造):http.ts 为本方建 `<gid>_<模型>.jsonl` sink。 */
   debugLog?: DebugLogSink;
@@ -82,7 +82,7 @@ export interface ModelProfile {
   /** 超时(分钟):与 `timeout_ms` 同权,优先采用(语义更直观,如 15 = 15 分钟)。 */
   timeout_minutes?: number;
   tokens_per_m?: TokensPerM;
-  /** 流式(SSE,仅 openai 协议):思考增量持续回传,规避网关空闲超时掐断。 */
+  /** 流式(SSE):思考增量持续回传,规避网关空闲超时掐断;双协议适配器均消费。 */
   stream?: boolean;
 }
 
@@ -107,6 +107,8 @@ export interface ServerDefaults {
   port?: number;
   steps?: number;
   max_tokens?: number;
+  /** 全局流式缺省(SSE):models 未显式 `stream` 时回落本值;解析优先级 请求体 > profile > 顶层。 */
+  stream?: boolean;
   timeout_ms?: number;
   timeout_minutes?: number;
   red?: SideDefaults;
@@ -607,8 +609,8 @@ export function createXiangqiServer(opts: XiangqiServerOptions = {}): XiangqiSer
         timeoutMinMs(d.timeout_minutes),
       tokensPerM:
         obj<TokensPerM>(b.tokensPerM) ?? obj<TokensPerM>(b.tokens_per_m) ?? obj<TokensPerM>(prof?.tokens_per_m) ?? defSide.tokensPerM,
-      // 流式(SSE):请求体单边 > profile;仅 openai 适配器消费。
-      stream: b.stream === true || prof?.stream === true ? true : undefined,
+      // 流式(SSE):请求体单边 > profile > 顶层全局缺省;双协议适配器均消费。
+      stream: b.stream === true || prof?.stream === true || d.stream === true ? true : undefined,
     };
   }
 

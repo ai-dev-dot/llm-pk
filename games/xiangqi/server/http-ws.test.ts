@@ -1480,5 +1480,72 @@ describe('协议分发(config.models.<name>.protocol)', () => {
       await srv.dispose();
     }
   });
+
+  it('顶层 stream:true 作为全局缺省:profile 未显式配置时双协议请求体均带 stream', async () => {
+    const config: ServerDefaults = {
+      stream: true, // 全局缺省,models 均不写 stream
+      models: {
+        'red-ai': {
+          base_url: 'https://open.bigmodel.cn/api/paas/v4',
+          api_key: 'sk-red',
+          model: 'glm-5.3-flash',
+          protocol: 'openai',
+        },
+        'ds-plain': {
+          base_url: 'https://api.deepseek.com/anthropic',
+          api_key: 'sk-ds',
+          model: 'deepseek-v4-flash',
+        },
+      },
+      red: { use: 'red-ai' },
+      black: { use: 'ds-plain' },
+    };
+    const srv = await startServer(undefined, undefined, config);
+    try {
+      const moveArgs = JSON.stringify({ analysis: 'a', move: 'h3-e3' });
+      const fetchMock = vi.fn(async (url: string) => {
+        if (String(url).includes('chat/completions')) {
+          return new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: 'assistant',
+                    tool_calls: [{ id: 'c', type: 'function', function: { name: 'pick_move', arguments: moveArgs } }],
+                  },
+                  finish_reason: 'tool_calls',
+                },
+              ],
+              usage: { prompt_tokens: 1, completion_tokens: 1 },
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            content: [{ type: 'tool_use', name: 'pick_move', input: { analysis: 'a', move: 'i7-i6' } }],
+            stop_reason: 'tool_use',
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { id } = await createGame(srv.server, { config: { maxTotalMoves: 2 } });
+      await waitFor(() => srv.store.get(id)?.arena.state === 'finished');
+
+      const calls = fetchMock.mock.calls as unknown as Array<[string, { body: string }]>;
+      expect(calls).toHaveLength(2);
+      const redReq = JSON.parse(calls[0]![1]!.body);
+      const blackReq = JSON.parse(calls[1]![1]!.body);
+      expect(redReq.stream).toBe(true); // openai 协议吃全局缺省
+      expect(blackReq.stream).toBe(true); // anthropic 协议吃全局缺省
+    } finally {
+      vi.unstubAllGlobals();
+      await srv.dispose();
+    }
+  });
 });
 

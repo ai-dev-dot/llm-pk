@@ -334,6 +334,8 @@ export class OpenAIPlayer implements Player {
     let finishReason: string | undefined;
     let usageRaw: Record<string, unknown> = {};
     let chunkCount = 0;
+    /** 流累积缓冲(含尾部未切走的残余;非 SSE 回退时持有完整响应文本)。 */
+    let buf = '';
     // onThought 节流:pending 攒到 120 字符或距上次推送 >=1s 才发
     let pending = '';
     let lastEmit = Date.now();
@@ -348,7 +350,6 @@ export class OpenAIPlayer implements Player {
       if (!res.body) throw new NetworkError('流式响应无 body', true);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let buf = '';
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -397,26 +398,33 @@ export class OpenAIPlayer implements Player {
       clearTimeout(timer);
       this.ctl = null;
     }
-    // tool 参数解析(与 parseChat 同语义:arguments 非 JSON -> 空 move 交 arena 打回)
-    let analysis = '';
-    let move = '';
-    if (toolArgs) {
-      try {
-        const args = JSON.parse(toolArgs) as Record<string, unknown>;
-        analysis = typeof args.analysis === 'string' ? args.analysis : '';
-        move = typeof args.move === 'string' ? args.move : '';
-      } catch {
-        /* arguments 非 JSON -> 空 move,走打回 */
+    let parsed: ChatParsed;
+    // 兼容性回退:流读完仍无任何 SSE 事件(如网关对 stream:true 仍返回普通 JSON)
+    // → 整段按非流式 JSON 解析,与 AnthropicPlayer 的 readSseBody 回退语义对齐。
+    if (chunkCount === 0 && buf.trim() !== '') {
+      parsed = parseChat(buf, this.tokensPerM);
+    } else {
+      // tool 参数解析(与 parseChat 同语义:arguments 非 JSON -> 空 move 交 arena 打回)
+      let analysis = '';
+      let move = '';
+      if (toolArgs) {
+        try {
+          const args = JSON.parse(toolArgs) as Record<string, unknown>;
+          analysis = typeof args.analysis === 'string' ? args.analysis : '';
+          move = typeof args.move === 'string' ? args.move : '';
+        } catch {
+          /* arguments 非 JSON -> 空 move,走打回 */
+        }
       }
+      const promptTokens = toNum(usageRaw.prompt_tokens);
+      const completionTokens = toNum(usageRaw.completion_tokens);
+      parsed = {
+        analysis,
+        move,
+        usage: { promptTokens, completionTokens, costUsd: estimateCostUsd(promptTokens, completionTokens, this.tokensPerM) },
+        finishReason,
+      };
     }
-    const promptTokens = toNum(usageRaw.prompt_tokens);
-    const completionTokens = toNum(usageRaw.completion_tokens);
-    const parsed: ChatParsed = {
-      analysis,
-      move,
-      usage: { promptTokens, completionTokens, costUsd: estimateCostUsd(promptTokens, completionTokens, this.tokensPerM) },
-      finishReason,
-    };
     // debug:流式记「等价完整交互」(思考全文 + 工具参数 + usage),与非流式 rawText 语义对齐
     this.debugLog?.write({
       kind: 'player-response',
